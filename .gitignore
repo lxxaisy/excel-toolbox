@@ -87,6 +87,7 @@ typings/
 
 # Vite
 .vite/
+*.timestamp-*.mjs
 
 # Electron-Forge
 out/
