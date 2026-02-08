@@ -10,14 +10,16 @@ import fs from 'fs';
  * @param {string} configPath - 规则与用友数据文件路径 (Sheet1: 规则, Sheet2: 用友数据)
  * @param {string|string[]} bankFilesPath - 银行对账单路径 (支持 Zip 文件路径或文件路径数组)
  * @param {string} targetMonth - 对账月份 (格式: YYYY-MM)
+ * @param {string} matchType - 匹配模式 ('fuzzy' | 'exact')
  * @returns {Promise<Buffer>} - 生成的 Excel Buffer
  */
-export async function reconcile(configPath, bankFilesPath, targetMonth) {
+export async function reconcile(configPath, bankFilesPath, targetMonth, matchType = 'fuzzy') {
   // 1. 读取规则和用友数据 (对应 VBA Lines 28-33 & 85-89)
   // VBA: ThisWorkbook.Sheets(1) -> 规则
   // VBA: ThisWorkbook.Sheets(2) -> 用友数据
-  const configWorkbook = XLSX.readFile(configPath);
-  
+  const configBuffer = fs.readFileSync(configPath);
+  const configWorkbook = XLSX.read(configBuffer, { type: 'buffer' });
+
   // 校验 Sheet 数量
   if (configWorkbook.SheetNames.length < 2) {
     throw new Error("配置文件必须包含至少两个 Sheet：Sheet1(规则) 和 Sheet2(用友数据)");
@@ -69,9 +71,9 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
       bankFiles[fileName] = fs.readFileSync(filePath);
     });
   } else if (typeof bankFilesPath === 'string') {
-     // 单个 Excel 文件
-     const fileName = path.basename(bankFilesPath);
-     bankFiles[fileName] = fs.readFileSync(bankFilesPath);
+    // 单个 Excel 文件
+    const fileName = path.basename(bankFilesPath);
+    bankFiles[fileName] = fs.readFileSync(bankFilesPath);
   }
 
   // 4. 核心处理逻辑 (对应 VBA Lines 129-493)
@@ -114,7 +116,7 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
     // 模糊匹配文件名 (VBA 直接用全名，这里支持文件名匹配)
     // 尝试直接匹配或寻找包含关系
     let matchedFileName = Object.keys(bankFiles).find(name => name === bankFileName || name.includes(bankFileName));
-    
+
     if (matchedFileName) {
       bankWorkbook = XLSX.read(bankFiles[matchedFileName], { type: 'buffer' });
     }
@@ -126,9 +128,9 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
         // 用友数据列对照:
         // accRow[12]: 收款金额 (猜测对应 VBA arr5(n, 13))
         // accRow[14]: 付款金额 (猜测对应 VBA arr5(n, 15))
-        const amt = accRow[12] || accRow[14]; 
+        const amt = accRow[12] || accRow[14];
         const dir = accRow[12] ? "收" : "付";
-        
+
         outputRows.push([
           rule[2], rule[6], "用友", `${accRow[0]}-${accRow[1]}`,
           dir, amt,
@@ -145,12 +147,12 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
 
     // 筛选目标月份数据 (对应 VBA Lines 156-180)
     // VBA 通过截取字符串或格式化日期比对月份
-    const dateColIdx = rule[8] - 1; 
+    const dateColIdx = rule[8] - 1;
 
     const bankRowsFiltered = bankData.filter((row, idx) => {
       if (idx === 0) return false; // 跳过表头
       let dateVal = row[dateColIdx];
-      
+
       // 日期格式化处理
       let dateStr = "";
       if (typeof dateVal === 'number') {
@@ -162,8 +164,8 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
           // YYYYMMDD
           dateStr = `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}`;
         } else {
-           // 尝试解析 YYYY-MM-DD
-           dateStr = dateStr.substring(0, 7);
+          // 尝试解析 YYYY-MM-DD
+          dateStr = dateStr.substring(0, 7);
         }
       }
       return dateStr === targetMonth;
@@ -194,18 +196,18 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
         const dirVal = row[colDir];
         if (dirVal === "贷") inAmount = rawIn;
         else if (dirVal === "借") outAmount = rawOut;
-        
+
         // 交通银行特殊处理 (VBA Line 205)
         if (rule[5] === "交通银行" && row[colDir + 1] === "贷") {
-             inAmount = rawIn; // 覆盖之前的判断
+          inAmount = rawIn; // 覆盖之前的判断
         }
       }
 
       // 摘要处理逻辑 (对应 VBA Lines 211-241)
       // 简化处理：直接获取对应列
-      const desc1 = row[rule[13] - 1] || ''; 
-      const desc2 = row[rule[14] - 1] || ''; 
-      const desc3 = row[rule[15] - 1] || ''; 
+      const desc1 = row[rule[13] - 1] || '';
+      const desc2 = row[rule[14] - 1] || '';
+      const desc3 = row[rule[15] - 1] || '';
 
       return {
         row,
@@ -218,23 +220,53 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
     });
 
     // 匹配算法 (对应 VBA Lines 249-387)
-    // 使用金额+方向进行匹配
-    // 构建银行数据池 (Key: 方向-金额)
+    // 使用金额+方向进行匹配 (精确模式下增加日期匹配)
+    // 构建银行数据池
     const bankPool = new Map();
     stdBankRows.forEach((item, idx) => {
+      let dayStr = "";
+      if (matchType === 'exact') {
+        // 提取日期中的天数
+        let dateVal = item.date;
+        if (typeof dateVal === 'number') {
+          const dateObj = XLSX.SSF.parse_date_code(dateVal);
+          dayStr = String(dateObj.d).padStart(2, '0');
+        } else {
+          const str = String(dateVal);
+          if (str.includes('-')) {
+            const parts = str.split('-');
+            if (parts.length >= 3) dayStr = parts[2].substring(0, 2);
+          } else if (str.length === 8) {
+            dayStr = str.substring(6, 8);
+          } else {
+            // 尝试解析
+            const d = new Date(str);
+            if (!isNaN(d.getTime())) {
+              dayStr = String(d.getDate()).padStart(2, '0');
+            }
+          }
+        }
+      }
+
       if (item.in > 0) {
-        const key = `收-${item.in.toFixed(2)}`;
+        const key = matchType === 'exact'
+          ? `收-${dayStr}-${item.in.toFixed(2)}`
+          : `收-${item.in.toFixed(2)}`;
         if (!bankPool.has(key)) bankPool.set(key, []);
         bankPool.get(key).push(idx);
       }
       if (item.out > 0) {
-        const key = `付-${item.out.toFixed(2)}`;
+        const key = matchType === 'exact'
+          ? `付-${dayStr}-${item.out.toFixed(2)}`
+          : `付-${item.out.toFixed(2)}`;
         if (!bankPool.has(key)) bankPool.set(key, []);
         bankPool.get(key).push(idx);
       }
     });
 
-    // 遍历用友数据进行匹配
+    // 记录用友数据的所有 Key，用于后续判断是否是“可能未入账”
+    const useFriendKeys = new Set();
+
     accData.forEach(accRow => {
       // 假设用友数据列: Col 12 (Index 12) = 收, Col 14 (Index 14) = 付
       const accIn = parseFloat(String(accRow[12]).replace(/,/g, '')) || 0;
@@ -243,15 +275,30 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
       let matched = false;
       let matchIdx = -1;
 
+      let dayStr = "";
+      if (matchType === 'exact') {
+        // accRow[1] 是凭证号/日期中的天数
+        dayStr = String(accRow[1]).padStart(2, '0');
+      }
+
+      let key = "";
       if (accIn > 0) {
-        const key = `收-${accIn.toFixed(2)}`;
+        key = matchType === 'exact'
+          ? `收-${dayStr}-${accIn.toFixed(2)}`
+          : `收-${accIn.toFixed(2)}`;
+        useFriendKeys.add(key);
+
         const list = bankPool.get(key);
         if (list && list.length > 0) {
           matchIdx = list.shift();
           matched = true;
         }
       } else if (accOut > 0) {
-        const key = `付-${accOut.toFixed(2)}`;
+        key = matchType === 'exact'
+          ? `付-${dayStr}-${accOut.toFixed(2)}`
+          : `付-${accOut.toFixed(2)}`;
+        useFriendKeys.add(key);
+
         const list = bankPool.get(key);
         if (list && list.length > 0) {
           matchIdx = list.shift();
@@ -262,12 +309,16 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
       if (matched) {
         stdBankRows[matchIdx].matched = true;
       } else {
-        // 未匹配：用友多入账 (对应 VBA Lines 354-363)
+        // 未匹配：用友多入账
+        // 判断是“金额不存在”还是“金额存在但数量不匹配”
+        const isPossibleDuplicate = bankPool.has(key);
+        const reason = isPossibleDuplicate ? "用友多入账 (可能重复/金额已存在)" : "用友多入账";
+
         outputRows.push([
           rule[2], rule[6], "用友", `${accRow[0]}-${accRow[1]}`,
           accIn > 0 ? "收" : "付",
           accIn > 0 ? accIn : accOut,
-          "用友多入账",
+          reason,
           accRow[7], accRow[8], "", "", ""
         ]);
       }
@@ -277,11 +328,41 @@ export async function reconcile(configPath, bankFilesPath, targetMonth) {
     stdBankRows.forEach(item => {
       if (!item.matched) {
         // 未匹配：用友未入账
+        let dayStr = "";
+        if (matchType === 'exact') {
+          // 提取日期中的天数，逻辑同上
+          let dateVal = item.date;
+          if (typeof dateVal === 'number') {
+            const dateObj = XLSX.SSF.parse_date_code(dateVal);
+            dayStr = String(dateObj.d).padStart(2, '0');
+          } else {
+            const str = String(dateVal);
+            if (str.includes('-')) {
+              const parts = str.split('-');
+              if (parts.length >= 3) dayStr = parts[2].substring(0, 2);
+            } else if (str.length === 8) {
+              dayStr = str.substring(6, 8);
+            } else {
+              const d = new Date(str);
+              if (!isNaN(d.getTime())) {
+                dayStr = String(d.getDate()).padStart(2, '0');
+              }
+            }
+          }
+        }
+
+        const key = (item.in > 0)
+          ? (matchType === 'exact' ? `收-${dayStr}-${item.in.toFixed(2)}` : `收-${item.in.toFixed(2)}`)
+          : (matchType === 'exact' ? `付-${dayStr}-${item.out.toFixed(2)}` : `付-${item.out.toFixed(2)}`);
+
+        const isPossibleMissing = useFriendKeys.has(key);
+        const reason = isPossibleMissing ? "用友未入账 (可能漏录/金额已存在)" : "用友未入账";
+
         outputRows.push([
           bookName, rule[2], "银行账单", item.date,
           item.in > 0 ? "收" : "付",
           item.in > 0 ? item.in : item.out,
-          "用友未入账",
+          reason,
           item.desc1, item.desc2, item.desc3, "", ""
         ]);
       }

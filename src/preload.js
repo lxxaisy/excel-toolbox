@@ -7,4 +7,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Bank Reconciliation APIs
   openBankFile: () => ipcRenderer.invoke('dialog:openBankFile'),
   runReconciliation: (data) => ipcRenderer.invoke('bank:reconcile', data),
+  runBalanceReconciliation: (data) => ipcRenderer.invoke('bank:reconcile-balance', data),
+
+  // Voucher Reconciliation APIs
+  selectFile: () => ipcRenderer.invoke('dialog:openFile'),
+  reconcileVouchers: (filePath) => ipcRenderer.invoke('voucher:reconcile', filePath),
 });

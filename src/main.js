@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
 import * as XLSX from 'xlsx';
 import { reconcile } from './utils/reconcile.js';
+import { reconcileBalance } from './utils/balanceReconcile.js';
+import { reconcileVouchers } from './utils/voucherReconcile.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -80,9 +82,9 @@ ipcMain.handle('dialog:openBankFile', async () => {
   return canceled ? null : filePaths;
 });
 
-ipcMain.handle('bank:reconcile', async (event, { configPath, bankPath, targetMonth }) => {
+ipcMain.handle('bank:reconcile', async (event, { configPath, bankPath, targetMonth, matchType }) => {
   try {
-    const buffer = await reconcile(configPath, bankPath, targetMonth);
+    const buffer = await reconcile(configPath, bankPath, targetMonth, matchType);
 
     // Prompt save
     const { canceled, filePath } = await dialog.showSaveDialog({
@@ -99,6 +101,53 @@ ipcMain.handle('bank:reconcile', async (event, { configPath, bankPath, targetMon
     return { success: true, filePath };
   } catch (error) {
     console.error('Reconciliation Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('bank:reconcile-balance', async (event, { configPath, bankPath, cutoffDate }) => {
+  try {
+    const buffer = await reconcileBalance(configPath, bankPath, cutoffDate);
+
+    // Prompt save
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '保存余额对账结果',
+      defaultPath: `余额对账结果_${cutoffDate}.xlsx`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !filePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(filePath, buffer);
+    return { success: true, filePath };
+  } catch (error) {
+    console.error('Balance Reconciliation Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 4. Voucher Reconciliation Handler
+ipcMain.handle('voucher:reconcile', async (event, filePath) => {
+  try {
+    const buffer = await reconcileVouchers(filePath);
+
+    // Prompt save
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存凭证制表人匹配结果',
+      defaultPath: `凭证制表人匹配结果_${path.basename(filePath)}`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Voucher Reconciliation Error:', error);
     return { success: false, error: error.message };
   }
 });

@@ -2,12 +2,10 @@
   <div class="h-full flex flex-col p-6 bg-slate-50 overflow-hidden">
     <div class="mb-6">
       <h2 class="text-2xl font-bold text-slate-800 flex items-center gap-2">
-        <span>💰</span> 集团银行明细对账 ({{ matchType === 'exact' ? '精确匹配' : '按月模糊' }})
+        <span>⚖️</span> 集团银行余额对账
       </h2>
       <p class="text-slate-500 mt-2 text-sm">
-        {{ matchType === 'exact'
-          ? '精确匹配模式：严格匹配日期(日)、金额和方向。'
-          : '模糊匹配模式：仅匹配月份、金额和方向，忽略具体日期差异。' }}
+        核对指定日期的用友账面余额与银行对账单余额。
         支持多文件/Zip包导入。
       </p>
     </div>
@@ -59,13 +57,13 @@
           </div>
         </div>
 
-        <!-- Step 3: Month Selection -->
+        <!-- Step 3: Cutoff Date Selection -->
         <div class="space-y-3">
-          <label class="text-base font-semibold text-slate-700 block">3. 对账月份</label>
+          <label class="text-base font-semibold text-slate-700 block">3. 对账截止日期</label>
           <div class="flex items-center gap-4">
-            <el-date-picker v-model="targetMonth" type="month" placeholder="选择月份" format="YYYY年MM月"
-              value-format="YYYY-MM" :clearable="false" class="!w-64" />
-            <span class="text-sm text-slate-400">将仅匹配该月份的流水记录</span>
+            <el-date-picker v-model="cutoffDate" type="date" placeholder="选择日期" format="YYYY-MM-DD"
+              value-format="YYYY-MM-DD" :clearable="false" class="!w-64" />
+            <span class="text-sm text-slate-400">将核对该日期（含）之前的最新余额</span>
           </div>
         </div>
 
@@ -92,20 +90,18 @@ const props = defineProps({
   onLog: {
     type: Function,
     default: () => { }
-  },
-  matchType: {
-    type: String,
-    default: 'fuzzy', // 'fuzzy' or 'exact'
-    validator: (value) => ['fuzzy', 'exact'].includes(value)
   }
 });
 
 const configPath = ref('');
-const bankPaths = ref([]); // Can be string (zip) or array (files)
-const targetMonth = ref(new Date().toISOString().slice(0, 7)); // Current YYYY-MM
+const bankPaths = ref([]); 
+// Default to end of last month
+const today = new Date();
+const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+const cutoffDate = ref(lastMonthEnd.toISOString().slice(0, 10)); 
+
 const loading = ref(false);
 
-// Helper to get filename
 const getBasename = (pathStr) => {
   if (!pathStr) return '';
   return pathStr.split(/[/\\]/).pop();
@@ -114,12 +110,11 @@ const getBasename = (pathStr) => {
 const isReady = computed(() => {
   const hasConfig = !!configPath.value;
   const hasBank = Array.isArray(bankPaths.value) ? bankPaths.value.length > 0 : !!bankPaths.value;
-  return hasConfig && hasBank && !!targetMonth.value;
+  return hasConfig && hasBank && !!cutoffDate.value;
 });
 
 const addLog = (message, type = 'info') => {
   props.onLog(message, type);
-  // Also show toast
   if (type === 'success') ElMessage.success(message);
   if (type === 'error') ElMessage.error(message);
 };
@@ -133,16 +128,13 @@ const selectConfigFile = async () => {
 };
 
 const selectBankFile = async () => {
-  // Returns array or null
   const paths = await window.electronAPI.openBankFile();
   if (paths && paths.length > 0) {
-    // Check if zip (usually single selection if zip is mixed, but dialog filter handles it)
-    // If user picked one zip, it might be an array of 1
     if (paths.length === 1 && paths[0].toLowerCase().endsWith('.zip')) {
-      bankPaths.value = paths[0]; // Store as string for zip
+      bankPaths.value = paths[0];
       addLog(`已加载压缩包: ${getBasename(paths[0])}`);
     } else {
-      bankPaths.value = paths; // Store as array
+      bankPaths.value = paths;
       addLog(`已加载 ${paths.length} 个银行对账单文件`);
     }
   }
@@ -150,14 +142,13 @@ const selectBankFile = async () => {
 
 const startReconcile = async () => {
   loading.value = true;
-  addLog('开始对账...', 'info');
+  addLog('开始余额对账...', 'info');
 
   try {
-    const result = await window.electronAPI.runReconciliation({
+    const result = await window.electronAPI.runBalanceReconciliation({
       configPath: configPath.value,
-      bankPath: toRaw(bankPaths.value), // Send raw value (string or array)
-      targetMonth: targetMonth.value,
-      matchType: props.matchType
+      bankPath: toRaw(bankPaths.value),
+      cutoffDate: cutoffDate.value
     });
 
     if (result.success) {
@@ -172,7 +163,3 @@ const startReconcile = async () => {
   }
 };
 </script>
-
-<style scoped>
-/* Scoped styles overrides if needed, but Tailwind handles most */
-</style>

@@ -5,28 +5,21 @@
 ## 🚀 本地开发 (Mac/Windows)
 
 ### 1. 安装依赖
-由于我们使用 `pnpm` 来管理依赖，请先确保已安装 pnpm。
+由于我们使用 `npm` 来管理依赖，请直接运行：
 
 ```bash
-# 如果没有安装 pnpm
-npm install -g pnpm
-
 # 安装项目依赖
-pnpm install
+npm install
 ```
 
 ### 2. 启动开发模式
 ```bash
 npm start
-# 或
-pnpm start
 ```
 
 ### 3. 打包应用
 ```bash
 npm run make
-# 或
-pnpm run make
 ```
 打包产物位于 `out/make` 目录下。
 

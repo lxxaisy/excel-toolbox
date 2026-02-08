@@ -7,10 +7,25 @@
         <span>Toolbox (Vue 3)</span>
       </div>
       <nav class="nav-menu">
-        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile' }"
-          @click="currentTab = 'bank-reconcile'">
+        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-fuzzy' }"
+          @click="currentTab = 'bank-reconcile-fuzzy'">
           <span class="icon">💰</span>
-          集团银行明细对账
+          集团银行明细对账 (按月模糊)
+        </div>
+        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-exact' }"
+          @click="currentTab = 'bank-reconcile-exact'">
+          <span class="icon">🎯</span>
+          集团银行明细对账 (精确匹配)
+        </div>
+        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-balance' }"
+          @click="currentTab = 'bank-reconcile-balance'">
+          <span class="icon">⚖️</span>
+          集团银行余额对账
+        </div>
+        <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
+          @click="currentTab = 'voucher-reconcile'">
+          <span class="icon">📋</span>
+          凭证制表人匹配
         </div>
         <div class="nav-item disabled">
           <span class="icon">🚧</span>
@@ -26,7 +41,10 @@
       </header>
 
       <section class="content-body">
-        <BankReconciliation v-if="currentTab === 'bank-reconcile'" :onLog="addLog" />
+        <BankReconciliation v-if="currentTab.startsWith('bank-reconcile') && currentTab !== 'bank-reconcile-balance'"
+          :matchType="currentTab === 'bank-reconcile-exact' ? 'exact' : 'fuzzy'" :onLog="addLog" />
+        <BankBalanceReconciliation v-if="currentTab === 'bank-reconcile-balance'" :onLog="addLog" />
+        <VoucherReconciliation v-if="currentTab === 'voucher-reconcile'" />
       </section>
 
       <!-- Console / Log Panel -->
@@ -48,13 +66,18 @@
 <script setup>
 import { ref, computed, nextTick, watch } from 'vue';
 import BankReconciliation from './components/BankReconciliation.vue';
+import BankBalanceReconciliation from './components/BankBalanceReconciliation.vue';
+import VoucherReconciliation from './components/VoucherReconciliation.vue';
 
-const currentTab = ref('bank-reconcile');
+const currentTab = ref('bank-reconcile-fuzzy');
 const logs = ref([{ time: new Date().toLocaleTimeString(), message: '[System] 准备就绪 (Vue 3)', type: 'info' }]);
 const consoleOutput = ref(null);
 
 const currentTitle = computed(() => {
-  if (currentTab.value === 'bank-reconcile') return '集团银行明细对账';
+  if (currentTab.value === 'bank-reconcile-fuzzy') return '集团银行明细对账 (按月模糊)';
+  if (currentTab.value === 'bank-reconcile-exact') return '集团银行明细对账 (精确匹配)';
+  if (currentTab.value === 'bank-reconcile-balance') return '集团银行余额对账';
+  if (currentTab.value === 'voucher-reconcile') return '凭证制表人匹配';
   return '未命名功能';
 });
 
@@ -135,7 +158,7 @@ body {
 
 /* Sidebar */
 .sidebar {
-  width: 280px;
+  width: 300px;
   /* Increased width */
   background-color: var(--bg-sidebar);
   color: var(--text-sidebar);
