@@ -3,8 +3,8 @@
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="brand">
-        <h1>BigBaby</h1>
-        <span>Toolbox (Vue 3)</span>
+        <h1>FAC</h1>
+        <span>Toolbox</span>
       </div>
       <nav class="nav-menu">
         <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-fuzzy' }"
@@ -48,7 +48,7 @@
       </section>
 
       <!-- Console / Log Panel -->
-      <footer class="console-panel">
+      <!-- <footer class="console-panel">
         <div class="console-header">
           <span>运行日志</span>
           <button class="clear-console" @click="clearLogs">清空</button>
@@ -58,7 +58,7 @@
             [{{ log.time }}] {{ log.message }}
           </div>
         </div>
-      </footer>
+      </footer> -->
     </main>
   </div>
 </template>

@@ -128,11 +128,9 @@ export async function reconcileVouchers(filePath) {
         for (const colIdx of amountColIndices) {
             let val = row[colIdx];
             if (typeof val === 'string') {
-                // Remove spaces (handles "- 221.65" -> "-221.65")
-                // Also remove any other non-numeric chars except '.' and '-' if needed, 
-                // but usually just stripping spaces is enough for "- 221.65".
-                // We use replace to remove all whitespace.
-                const cleaned = val.replace(/\s+/g, '');
+                // Remove spaces and commas (handles "- 1,613.56" -> "-1613.56")
+                // We use replace to remove all whitespace and commas.
+                const cleaned = val.replace(/[\s,]+/g, '');
 
                 // Check if it looks like a number
                 if (cleaned !== '' && !isNaN(cleaned)) {

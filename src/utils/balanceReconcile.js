@@ -31,24 +31,32 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
     const accountingRows = accountingData.slice(1);
     const rulesRows = rulesData.slice(1);
 
+    // 辅助函数：获取列索引 (支持数字 1-based 和字母列名)
+    const getColIndex = (val) => {
+        if (typeof val === 'number') return val - 1;
+        if (typeof val === 'string') {
+            // 纯数字字符串
+            if (/^\d+$/.test(val)) return parseInt(val, 10) - 1;
+            // 字母列名 (e.g. "A", "AA")
+            return XLSX.utils.decode_col(val);
+        }
+        return -1;
+    };
+
     // 2. 准备用友数据字典
     // Key: 账簿名称 + " " + 银行账号 (对应 VBA d1)
-    // VBA: d1(arr1(i, 2) & " " & arr1(i, 5)) = arr2
-    // arr1(i, 2) -> accountingRows col 1 (账簿)
-    // arr1(i, 5) -> accountingRows col 4 (银行账号)
     const accountingMap = new Map();
     accountingRows.forEach(row => {
-        // 假设用友数据格式: [No, 账簿, 银行账户名称, 银行, 银行账号, ..., 期末余额(col 19?), ...]
-        // 需要确认用友数据的列结构。
-        // 根据 VBA: 
-        // arr1 = Sheet2.CurrentRegion
-        // arr1(i, 2) 是账簿 (col index 1)
-        // arr1(i, 5) 是银行账号 (col index 4)
-        // 存储的是整行数据
-        const key = `${row[1]} ${row[4]}`;
-        // 如果存在重复，VBA逻辑是保留第一个? VBA lines 78-80: If Not d1.exists Then d1(...) = arr2
-        if (!accountingMap.has(key)) {
-            accountingMap.set(key, row);
+        // 确保转换为字符串并去除首尾空格，防止因格式差异（如数字 vs 字符串）导致匹配失败
+        const book = String(row[1] || '').trim();
+        const account = String(row[4] || '').trim();
+
+        if (book && account) {
+            const key = `${book} ${account}`;
+            // 如果存在重复，保留第一个
+            if (!accountingMap.has(key)) {
+                accountingMap.set(key, row);
+            }
         }
     });
 
@@ -59,9 +67,32 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
         const zip = new AdmZip(bankFilesPath);
         const zipEntries = zip.getEntries();
         zipEntries.forEach(entry => {
-            if (!entry.isDirectory && (entry.entryName.endsWith('.xls') || entry.entryName.endsWith('.xlsx'))) {
-                const fileName = path.basename(entry.entryName);
-                bankFiles[fileName] = entry.getData();
+            if (!entry.isDirectory) {
+                let fileName = entry.entryName;
+
+                // 尝试修复乱码: 如果存在 rawEntryName (Buffer)，尝试用 GBK 解码
+                // AdmZip 默认用 UTF-8，Windows 压缩包通常是 GBK
+                if (entry.rawEntryName) {
+                    try {
+                        // 尝试用 GBK 解码
+                        const decoder = new TextDecoder('gbk');
+                        const gbkName = decoder.decode(entry.rawEntryName);
+
+                        // 简单的启发式检查：如果 GBK 解码后的名字看起来更像正常文件名（比如以 .xlsx 结尾且长度合理）
+                        // 或者原 entryName 包含乱码特征（如 �）
+                        if (gbkName.endsWith('.xls') || gbkName.endsWith('.xlsx')) {
+                            fileName = gbkName;
+                        }
+                    } catch (e) {
+                        console.warn("GBK decode failed, falling back to default entryName", e);
+                    }
+                }
+
+                fileName = path.basename(fileName);
+
+                if (fileName.endsWith('.xls') || fileName.endsWith('.xlsx')) {
+                    bankFiles[fileName] = entry.getData();
+                }
             }
         });
     } else if (Array.isArray(bankFilesPath)) {
@@ -102,8 +133,8 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
         // rule[11]: 余额列 (arr4 col 12)
         // rule[19]: 排序方式 (arr4 col 20) ("升序")
 
-        const bookName = rule[0];
-        const accountCode = rule[1];
+        const bookName = String(rule[0] || '').trim();
+        const accountCode = String(rule[1] || '').trim();
         const bankFileName = rule[3];
         const sheetName = rule[4];
 
@@ -135,6 +166,7 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
         let bankBalance = 0;
         let bankFound = false;
         let remark = "";
+        let hasValidBankRecord = false; // 标记是否找到了有效的银行记录 (对应 VBA b <> "")
 
         // 查找银行文件
         let matchedFileName = Object.keys(bankFiles).find(name => name === bankFileName || name.includes(bankFileName));
@@ -143,10 +175,19 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
             const bankWorkbook = XLSX.read(bankFiles[matchedFileName], { type: 'buffer' });
             if (bankWorkbook.Sheets[sheetName]) {
                 const bankSheet = bankWorkbook.Sheets[sheetName];
+
+                // 强制从 A1 开始读取，防止首列为空时导致索引错位
+                if (bankSheet['!ref']) {
+                    const range = XLSX.utils.decode_range(bankSheet['!ref']);
+                    range.s.r = 0;
+                    range.s.c = 0;
+                    bankSheet['!ref'] = XLSX.utils.encode_range(range);
+                }
+
                 const bankData = XLSX.utils.sheet_to_json(bankSheet, { header: 1, defval: '' });
 
-                const dateColIdx = rule[8] - 1;
-                const balColIdx = rule[11] - 1;
+                const dateColIdx = getColIndex(rule[8]);
+                const balColIdx = getColIndex(rule[11]);
                 const isAscending = rule[19] === "升序";
 
                 // 筛选符合日期的数据
@@ -163,22 +204,42 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
                         const dateObj = XLSX.SSF.parse_date_code(dateVal);
                         dateStr = `${dateObj.y}-${String(dateObj.m).padStart(2, '0')}-${String(dateObj.d).padStart(2, '0')}`;
                     } else {
-                        const str = String(dateVal);
-                        if (str.length >= 8 && !str.includes('-')) {
-                            // YYYYMMDD
-                            dateStr = `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
-                        } else {
-                            // 尝试直接格式化
+                        const str = String(dateVal).trim();
+                        // 处理常见格式 YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
+                        if (str.length >= 8) {
+                            // 尝试标准化分隔符
+                            const cleanStr = str.replace(/[\/\.]/g, '-');
+
+                            if (/^\d{8}$/.test(str)) {
+                                // YYYYMMDD
+                                dateStr = `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
+                            } else if (cleanStr.includes('-')) {
+                                // YYYY-MM-DD
+                                const parts = cleanStr.split('-');
+                                if (parts.length >= 3) {
+                                    // 补全 0 (e.g. 2023-1-1 -> 2023-01-01)
+                                    const y = parts[0];
+                                    const m = parts[1].padStart(2, '0');
+                                    const d = parts[2].split(' ')[0].padStart(2, '0'); // 去除可能的时间部分
+                                    dateStr = `${y}-${m}-${d}`;
+                                }
+                            }
+                        }
+
+                        // 兜底：Date 对象解析 (注意避免 UTC 问题)
+                        if (!dateStr) {
                             const d = new Date(str);
                             if (!isNaN(d.getTime())) {
-                                dateStr = d.toISOString().split('T')[0];
-                            } else {
-                                dateStr = str.substring(0, 10);
+                                // 使用本地时间方法获取年月日
+                                const y = d.getFullYear();
+                                const m = String(d.getMonth() + 1).padStart(2, '0');
+                                const da = String(d.getDate()).padStart(2, '0');
+                                dateStr = `${y}-${m}-${da}`;
                             }
                         }
                     }
 
-                    if (dateStr <= cutoffDate) {
+                    if (dateStr && dateStr <= cutoffDate) {
                         validRows.push({
                             rowIdx: i,
                             dateStr: dateStr,
@@ -188,6 +249,7 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
                 }
 
                 if (validRows.length > 0) {
+                    hasValidBankRecord = true;
                     // 找日期最大的
                     validRows.sort((a, b) => {
                         if (a.dateStr !== b.dateStr) {
@@ -233,15 +295,27 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
             result = diff === 0 ? "无误" : "异常";
         }
 
-        outputRows.push([
-            bookName,
-            rule[2], // 银行账户名称 (rule col 2, arr4 col 3)
-            accBalance,
-            bankBalance,
-            diff,
-            result,
-            remark
-        ]);
+        // 过滤逻辑：
+        // 1. 用友余额不为 0 (hasAccData) -> 保留
+        // 2. 存在有效的银行记录 (hasValidBankRecord) -> 保留
+        //    (只要能解析出有效日期且在截止日期前，即使余额为0也保留)
+        // 3. 只有当 "用友余额为 0" 且 "未找到有效记录" (包括文件/Sheet缺失或无符合日期记录) 时，才过滤掉
+        const hasAccData = accRow && Math.abs(accBalance) > 0.005;
+
+        // 确定银行账户名称：优先使用用友数据中的名称 (Col 6, index 5)，如果没有则使用规则中的名称 (Col 3, index 2)
+        const accountName = accRow && accRow[5] ? accRow[5] : rule[2];
+
+        if (hasAccData || hasValidBankRecord) {
+            outputRows.push([
+                bookName,
+                accountName,
+                accBalance,
+                bankBalance,
+                diff,
+                result,
+                remark
+            ]);
+        }
     }
 
     // 5. 生成结果 Excel
