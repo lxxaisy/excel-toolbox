@@ -13,6 +13,9 @@ import fs from 'fs';
  * @returns {Promise<Buffer>} - 生成的 Excel Buffer
  */
 export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
+    // 确保 cutoffDate 是字符串格式
+    cutoffDate = String(cutoffDate).trim();
+
     // 1. 读取规则和用友数据
     const configBuffer = fs.readFileSync(configPath);
     const configWorkbook = XLSX.read(configBuffer, { type: 'buffer' });
@@ -193,58 +196,114 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
                 // 筛选符合日期的数据
                 const validRows = [];
 
-                // 跳过表头 (row index 0)
                 for (let i = 1; i < bankData.length; i++) {
                     const row = bankData[i];
                     let dateVal = row[dateColIdx];
                     let dateStr = "";
+                    let rawStr = "";
+
+                    if (dateVal != null) {
+                        rawStr = String(dateVal).trim();
+                    }
 
                     // 日期处理
                     if (typeof dateVal === 'number') {
                         const dateObj = XLSX.SSF.parse_date_code(dateVal);
                         dateStr = `${dateObj.y}-${String(dateObj.m).padStart(2, '0')}-${String(dateObj.d).padStart(2, '0')}`;
-                    } else {
-                        const str = String(dateVal).trim();
-                        // 处理常见格式 YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
-                        if (str.length >= 8) {
-                            // 尝试标准化分隔符
-                            const cleanStr = str.replace(/[\/\.]/g, '-');
+                    } else if (rawStr) {
+                        let str = rawStr;
 
-                            if (/^\d{8}$/.test(str)) {
-                                // YYYYMMDD
-                                dateStr = `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
-                            } else if (cleanStr.includes('-')) {
-                                // YYYY-MM-DD
-                                const parts = cleanStr.split('-');
-                                if (parts.length >= 3) {
-                                    // 补全 0 (e.g. 2023-1-1 -> 2023-01-01)
-                                    const y = parts[0];
-                                    const m = parts[1].padStart(2, '0');
-                                    const d = parts[2].split(' ')[0].padStart(2, '0'); // 去除可能的时间部分
-                                    dateStr = `${y}-${m}-${d}`;
-                                }
+                        // Case 5: 20260106 13:55:16 -> Extract 20260106 first
+                        if (/\s/.test(str)) {
+                            const parts = str.split(/\s+/);
+                            // If first part looks like YYYYMMDD
+                            if (/^\d{8}$/.test(parts[0])) {
+                                str = parts[0];
+                            }
+                            // If first part looks like YYYY-MM-DD or YYYY/MM/DD
+                            else if (parts[0].includes('-') || parts[0].includes('/')) {
+                                str = parts[0];
                             }
                         }
 
-                        // 兜底：Date 对象解析 (注意避免 UTC 问题)
-                        if (!dateStr) {
-                            const d = new Date(str);
-                            if (!isNaN(d.getTime())) {
-                                // 使用本地时间方法获取年月日
-                                const y = d.getFullYear();
-                                const m = String(d.getMonth() + 1).padStart(2, '0');
-                                const da = String(d.getDate()).padStart(2, '0');
-                                dateStr = `${y}-${m}-${da}`;
+                        // Case 3: 20260105
+                        if (/^\d{8}$/.test(str)) {
+                            // YYYYMMDD
+                            dateStr = `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
+                        } else {
+                            // Case 2, 4, 6: 2026-01-02, 2026-01-09 12:57:12, 2026/01/01
+                            // Try to standardize separators: 2023/05/01, 2023.05.01 -> 2023-05-01
+                            str = str.replace(/[\/\.年]/g, '-').replace(/[月日]/g, '');
+
+                            // If it matches YYYY-MM-DD pattern roughly
+                            const parts = str.split('-');
+                            if (parts.length >= 3) {
+                                // 补全 0 (e.g. 2023-1-1 -> 2023-01-01)
+                                const y = parts[0];
+                                const m = parts[1].padStart(2, '0');
+                                const d = parts[2].split(' ')[0].padStart(2, '0'); // 去除可能的时间部分
+                                dateStr = `${y}-${m}-${d}`;
+                            } else {
+                                // Fallback: try Date parsing for loose formats
+                                const d = new Date(dateVal); // Use original val for Date constructor
+                                if (!isNaN(d.getTime())) {
+                                    // 使用本地时间方法获取年月日
+                                    const y = d.getFullYear();
+                                    const m = String(d.getMonth() + 1).padStart(2, '0');
+                                    const da = String(d.getDate()).padStart(2, '0');
+                                    dateStr = `${y}-${m}-${da}`;
+                                }
                             }
                         }
                     }
 
-                    if (dateStr && dateStr <= cutoffDate) {
-                        validRows.push({
-                            rowIdx: i,
-                            dateStr: dateStr,
-                            balance: parseFloat(String(row[balColIdx]).replace(/,/g, '')) || 0
-                        });
+                    // 关键修正：
+                    // 1. 如果 dateStr 解析成功 -> 检查 cutoffDate
+                    // 2. 如果 dateStr 解析失败 (为空) -> 回退到 VBA 的逻辑：直接比较字符串
+                    //    VBA 逻辑：If cellValue <= cutoffDate Then ...
+                    //    这能涵盖：
+                    //    a. 空白单元格 ("" <= "2026...") -> 保留
+                    //    b. 占位符 (如 "-", "." 等 ASCII 字符 <= "2026...") -> 保留
+                    //    c. 无法解析但合法的文本 (如果不幸小于 cutoffDate) -> 保留
+                    //    d. 表头 ("交易日期" > "2026...") -> 过滤 (汉字通常大于 ASCII)
+
+                    if (dateStr) {
+                        if (dateStr <= cutoffDate) {
+                            validRows.push({
+                                rowIdx: i,
+                                dateStr: dateStr,
+                                balance: parseFloat(String(row[balColIdx]).replace(/,/g, '')) || 0
+                            });
+                        }
+                    } else {
+                        // 解析失败
+                        // 增强余额解析：去除货币符号、空格等非数字字符 (保留数字、小数点、负号)
+                        const rawBal = String(row[balColIdx] || 0);
+                        const cleanBal = rawBal.replace(/[^\d.-]/g, '');
+                        const rowBalance = parseFloat(cleanBal) || 0;
+
+                        // 1. 原始字符串比较 (涵盖空串、数字等)
+                        if (rawStr <= cutoffDate) {
+                            validRows.push({
+                                rowIdx: i,
+                                dateStr: rawStr, // 使用原始值参与后续排序
+                                balance: rowBalance
+                            });
+                        }
+                        // 2. 兜底逻辑：如果 rawStr > cutoffDate (可能是未来日期，也可能是中文/文本)
+                        //    如果 rawStr 不是以数字开头（说明可能是中文描述，如"期初余额"、"承上页"等），
+                        //    且余额有效（不为0），则保留。这能解决因日期列包含说明性文字导致被过滤的问题。
+                        else if (!/^\d/.test(rawStr) && Math.abs(rowBalance) > 0.005) {
+                            // 排除明显的表头关键字 (防止把表头行加进来)
+                            const isHeader = /日期|date|time|余额|balance|摘要|description/i.test(rawStr);
+                            if (!isHeader) {
+                                validRows.push({
+                                    rowIdx: i,
+                                    dateStr: "", // 视为无日期记录
+                                    balance: rowBalance
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -252,8 +311,13 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
                     hasValidBankRecord = true;
                     // 找日期最大的
                     validRows.sort((a, b) => {
-                        if (a.dateStr !== b.dateStr) {
-                            return a.dateStr > b.dateStr ? -1 : 1; // 日期降序
+                        const da = a.dateStr;
+                        const db = b.dateStr;
+                        // 有日期 > 无日期
+                        if (da && !db) return -1;
+                        if (!da && db) return 1;
+                        if (da !== db) {
+                            return da > db ? -1 : 1; // 日期降序
                         }
                         return 0;
                     });
@@ -272,7 +336,7 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
                         targetRow = maxDateRows[0];
                     }
 
-                    bankBalance = targetRow.balance;
+                    bankBalance = Number(parseFloat(targetRow.balance).toFixed(2));
                     bankFound = true;
                 } else {
                     remark = "未找到截止日期前的记录";
@@ -295,23 +359,31 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
             result = diff === 0 ? "无误" : "异常";
         }
 
-        // 过滤逻辑：
+        // 过滤逻辑修正：
         // 1. 用友余额不为 0 (hasAccData) -> 保留
-        // 2. 存在有效的银行记录 (hasValidBankRecord) -> 保留
-        //    (只要能解析出有效日期且在截止日期前，即使余额为0也保留)
-        // 3. 只有当 "用友余额为 0" 且 "未找到有效记录" (包括文件/Sheet缺失或无符合日期记录) 时，才过滤掉
+        // 2. 用友余额为 0，但找到了银行对账单 (accRow && bankFound) -> 保留 (即使银行对账单没数据，也需要显示，符合用户“有对账单就要”的要求)
+        // 3. 用友没有数据 (!accRow)，但找到了有效的银行记录 (hasValidBankRecord) -> 保留 (补录用友缺失的情况)
+
+        // 简而言之：
+        // - 如果在用友里 (accRow): 只要余额不为0 或者 找到了银行文件/Sheet，就保留。只有当“余额为0 且 没找到银行Sheet”时才过滤。
+        // - 如果不在用友里 (!accRow): 只有找到了有效银行记录才保留。
+
         const hasAccData = accRow && Math.abs(accBalance) > 0.005;
 
         // 确定银行账户名称：优先使用用友数据中的名称 (Col 6, index 5)，如果没有则使用规则中的名称 (Col 3, index 2)
         const accountName = accRow && accRow[5] ? accRow[5] : rule[2];
 
-        if (hasAccData || hasValidBankRecord) {
+        // 核心过滤条件
+        // (hasAccData) covers UseYou != 0
+        // (accRow && bankFound) covers UseYou == 0 but Bank Found (Empty or not)
+        // (hasValidBankRecord) covers !accRow but Bank Valid
+        if (hasAccData || (accRow && bankFound) || hasValidBankRecord) {
             outputRows.push([
                 bookName,
                 accountName,
-                accBalance,
-                bankBalance,
-                diff,
+                Number(accBalance.toFixed(2)),
+                Number(bankBalance.toFixed(2)),
+                Number(diff.toFixed(2)),
                 result,
                 remark
             ]);
