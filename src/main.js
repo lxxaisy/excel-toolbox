@@ -12,15 +12,30 @@ if (started) {
   app.quit();
 }
 
+// 设置 Dock 图标 (macOS 开发模式)
+// 必须在 app.whenReady() 之后或者确保 app 已初始化，但为了安全起见，我们把它移到 createWindow 内部或者 app.on('ready') 回调中
+// 直接在顶层调用 app.dock 可能会导致 "Cannot read property 'dock' of undefined" 或者 "app.dock is not available"（如果在非 macOS 平台或初始化过早）
+
 const createWindow = () => {
   // Create the browser window.
+  const iconPath = path.resolve(__dirname, '../../assets/icon.png');
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 850,
+    icon: iconPath, // 开发模式下，Windows/Linux 支持 icon 属性
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+
+  // macOS Dock Icon
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.setIcon(iconPath);
+    } catch (e) {
+      console.warn("Failed to set dock icon:", e);
+    }
+  }
 
   // and load the index.html of the app.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

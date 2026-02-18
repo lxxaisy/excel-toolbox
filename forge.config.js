@@ -4,6 +4,7 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
   packagerConfig: {
     asar: true,
+    icon: './assets/icon' // 自动匹配 assets/icon.icns (macOS) 和 assets/icon.ico (Windows)
   },
   rebuildConfig: {},
   makers: [
