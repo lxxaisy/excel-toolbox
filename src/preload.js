@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Voucher Reconciliation APIs
   selectFile: () => ipcRenderer.invoke('dialog:openFile'),
   reconcileVouchers: (filePath) => ipcRenderer.invoke('voucher:reconcile', filePath),
+  expandDept: (filePath) => ipcRenderer.invoke('dept:expand', filePath),
+  generateInvoice: (filePath) => ipcRenderer.invoke('invoice:generate', filePath)
 });

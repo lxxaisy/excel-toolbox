@@ -6,6 +6,8 @@ import * as XLSX from 'xlsx';
 import { reconcile } from './utils/reconcile.js';
 import { reconcileBalance } from './utils/balanceReconcile.js';
 import { reconcileVouchers } from './utils/voucherReconcile.js';
+import { expandDept } from './utils/deptExpand.js';
+import { generateInvoices } from './utils/invoiceGenerator.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -163,6 +165,49 @@ ipcMain.handle('voucher:reconcile', async (event, filePath) => {
     return { success: true, savePath };
   } catch (error) {
     console.error('Voucher Reconciliation Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 5. Dept Expand Handler
+ipcMain.handle('dept:expand', async (event, filePath) => {
+  try {
+    const buffer = await expandDept(filePath);
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存部门批量展开结果',
+      defaultPath: `部门批量展开结果_${path.basename(filePath)}`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+    if (canceled || !savePath) return { success: false, message: 'Cancelled save' };
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Dept Expand Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 7. Invoice Generator Handler
+ipcMain.handle('invoice:generate', async (event, filePath) => {
+  try {
+    // 1. Select Output Directory
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '选择保存生成文件的文件夹',
+      properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (canceled || filePaths.length === 0) {
+      return { success: false, message: 'Cancelled folder selection' };
+    }
+
+    const outputDir = filePaths[0];
+
+    // 2. Generate Invoices
+    const result = await generateInvoices(filePath, outputDir);
+    return result;
+
+  } catch (error) {
+    console.error('Invoice Generate Error:', error);
     return { success: false, error: error.message };
   }
 });

@@ -27,6 +27,15 @@
           <span class="icon">📋</span>
           凭证制表人匹配
         </div>
+        <div class="nav-item" :class="{ active: currentTab === 'dept-expand' }" @click="currentTab = 'dept-expand'">
+          <span class="icon">🏢</span>
+          部门批量新增
+        </div>
+        <div class="nav-item" :class="{ active: currentTab === 'invoice-generator' }"
+          @click="currentTab = 'invoice-generator'">
+          <span class="icon">📑</span>
+          发票/合同生成
+        </div>
         <div class="nav-item disabled">
           <span class="icon">🚧</span>
           更多功能开发中...
@@ -45,6 +54,8 @@
           :matchType="currentTab === 'bank-reconcile-exact' ? 'exact' : 'fuzzy'" :onLog="addLog" />
         <BankBalanceReconciliation v-if="currentTab === 'bank-reconcile-balance'" :onLog="addLog" />
         <VoucherReconciliation v-if="currentTab === 'voucher-reconcile'" />
+        <DeptExpand v-if="currentTab === 'dept-expand'" />
+        <InvoiceGenerator v-if="currentTab === 'invoice-generator'" />
       </section>
 
       <!-- Console / Log Panel -->
@@ -68,6 +79,8 @@ import { ref, computed, nextTick, watch } from 'vue';
 import BankReconciliation from './components/BankReconciliation.vue';
 import BankBalanceReconciliation from './components/BankBalanceReconciliation.vue';
 import VoucherReconciliation from './components/VoucherReconciliation.vue';
+import DeptExpand from './components/DeptExpand.vue';
+import InvoiceGenerator from './components/InvoiceGenerator.vue';
 
 const currentTab = ref('bank-reconcile-fuzzy');
 const logs = ref([{ time: new Date().toLocaleTimeString(), message: '[System] 准备就绪 (Vue 3)', type: 'info' }]);
@@ -78,6 +91,8 @@ const currentTitle = computed(() => {
   if (currentTab.value === 'bank-reconcile-exact') return '集团银行明细对账 (精确匹配)';
   if (currentTab.value === 'bank-reconcile-balance') return '集团银行余额对账';
   if (currentTab.value === 'voucher-reconcile') return '凭证制表人匹配';
+  if (currentTab.value === 'dept-expand') return '部门批量新增';
+  if (currentTab.value === 'invoice-generator') return '发票/合同批量生成';
   return '未命名功能';
 });
 
