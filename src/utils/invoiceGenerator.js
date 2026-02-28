@@ -114,34 +114,34 @@ export async function generateInvoices(dataFilePath, outputDir) {
             // Process each template
             processTemplateRow(outputWorkbooks.customsInvoice, sheetName, [
                 { type: 'replace', find: 'JPY2418400', replace: jpyAmountO },
-                { type: 'append', find: '购货单位', label: '购货单位 THE BUYER:', value: customer, targetColumn: 5 }, // Column E
+                { type: 'append', find: '购货单位 THE BUYER:', label: '购货单位 THE BUYER:', value: customer, targetColumn: 5 }, // Column E
                 { type: 'append', find: 'THE BUYER', label: '购货单位 THE BUYER:', value: customer, targetColumn: 5 },
-                { type: 'append', find: '发票号', label: '发票号 INVOICE NO.:', value: contractNo, targetColumn: 5 },
+                { type: 'append', find: '发票号 INVOICE NO.:', label: '发票号 INVOICE NO.:', value: contractNo, targetColumn: 5 },
                 { type: 'append', find: 'INVOICE NO.', label: '发票号 INVOICE NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: '合同号', label: '合同号 CONTRACT NO.:', value: contractNo, targetColumn: 5 },
+                { type: 'append', find: '合同号 CONTRACT NO.:', label: '合同号 CONTRACT NO.:', value: contractNo, targetColumn: 5 },
                 { type: 'append', find: 'CONTRACT NO.', label: '合同号 CONTRACT NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: '开票日期', label: '开票日期 INVOICE DATE:', value: formatDate(entryDate), targetColumn: 5 },
+                { type: 'append', find: '开票日期 INVOICE DATE:', label: '开票日期 INVOICE DATE:', value: formatDate(entryDate), targetColumn: 5 },
                 { type: 'append', find: 'INVOICE DATE', label: '开票日期 INVOICE DATE:', value: formatDate(entryDate), targetColumn: 5 },
             ]);
 
             processTemplateRow(outputWorkbooks.customsContract, sheetName, [
                 { type: 'replace', find: '260000', replace: jpyAmountE },
-                { type: 'replace', find: '2020/12/31', replace: longDate, isDate: true, dateSerial: DATE_2020_12_31_SERIAL },
-                { type: 'append', find: '甲方', label: '甲方：', value: customer },
-                { type: 'append', find: '合同编号', label: '合同编号：', value: contractNo },
-                { type: 'append', find: '合同执行日期', label: '合同执行日期：', value: formatDate(entryDate) },
+                // { type: 'replace', find: '2020/12/31', replace: longDate, isDate: true, dateSerial: DATE_2020_12_31_SERIAL },
+                { type: 'append', find: '甲方：', label: '甲方：', value: customer },
+                { type: 'append', find: '合同编号：', label: '合同编号：', value: contractNo },
+                { type: 'append', find: '合同执行日期：', label: '合同执行日期：', value: formatDate(entryDate) },
             ]);
 
             processTemplateRow(outputWorkbooks.taxInvoice, sheetName, [
                 { type: 'replace', find: '2405', replace: usdAmountK },
-                { type: 'append', find: 'INVOICE NO', label: 'INVOICE NO:', value: taxNo },
-                { type: 'append', find: 'CONTRACT NO.', label: 'CONTRACT NO.:', value: contractNo },
+                { type: 'append', find: 'INVOICE NO:', label: 'INVOICE NO:', value: taxNo },
+                { type: 'append', find: 'CONTRACT NO.:', label: 'CONTRACT NO.:', value: contractNo },
                 { type: 'append', find: 'DATE:', label: '    DATE: ', value: formatDate(entryDate) },
-                { type: 'append', find: '结算单号', label: '结算单号：', value: taxNo },
-                { type: 'append', find: '合同号', label: '合同号：', value: contractNo },
-                { type: 'append', find: '日期', label: '    日期：', value: formatDate(entryDate) },
-                { type: 'append', find: 'FOR ACCOUNT AND RISK OF MESSRS', label: 'FOR ACCOUNT AND RISK OF MESSRS:', value: customer },
-                { type: 'append', find: '风险承担者', label: '风险承担者：', value: chineseName },
+                { type: 'append', find: '结算单号：', label: '结算单号：', value: taxNo },
+                { type: 'append', find: '合同号：', label: '合同号：', value: contractNo },
+                { type: 'append', find: '日期：', label: '    日期：', value: formatDate(entryDate) },
+                { type: 'append', find: 'FOR ACCOUNT AND RISK OF MESSRS:', label: 'FOR ACCOUNT AND RISK OF MESSRS:', value: customer, targetColumn: 4 },
+                { type: 'append', find: '风险承担者：', label: '风险承担者：', value: chineseName, targetColumn: 3 },
             ]);
         }
 
