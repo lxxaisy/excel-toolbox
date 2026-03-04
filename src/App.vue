@@ -22,7 +22,7 @@
           <span class="icon">⚖️</span>
           集团银行余额对账
         </div>
-        <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
+        <!-- <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
           @click="currentTab = 'voucher-reconcile'">
           <span class="icon">📋</span>
           凭证制表人匹配
@@ -35,7 +35,7 @@
           @click="currentTab = 'invoice-generator'">
           <span class="icon">📑</span>
           发票/合同生成
-        </div>
+        </div> -->
         <div class="nav-item disabled">
           <span class="icon">🚧</span>
           更多功能开发中...
