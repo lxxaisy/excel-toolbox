@@ -381,7 +381,7 @@ export async function reconcileVouchers(filePath) {
         }
 
         // Rule 9: 顺利 OR 穹创
-        if ((originalAccountBook.includes("顺利") || originalAccountBook.includes("穹创")) && accountName.includes("折旧")) {
+        if ((originalAccountBook.includes("顺利") || originalAccountBook.includes("穹创")) && (accountName.includes("折旧") || accountName.includes("租金"))) {
             markText = "计入";
         }
 
