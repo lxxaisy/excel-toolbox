@@ -8,6 +8,7 @@ import { reconcileBalance } from './utils/balanceReconcile.js';
 import { reconcileVouchers } from './utils/voucherReconcile.js';
 import { expandDept } from './utils/deptExpand.js';
 import { generateInvoices } from './utils/invoiceGenerator.js';
+import { importJapanCost } from './utils/japanCostImport.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -208,6 +209,30 @@ ipcMain.handle('invoice:generate', async (event, filePath) => {
 
   } catch (error) {
     console.error('Invoice Generate Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 8. Japan Cost Import Handler
+ipcMain.handle('japan-cost:import', async (event, { filePath, exchangeRate }) => {
+  try {
+    const buffer = await importJapanCost(filePath, exchangeRate);
+    const parsedRate = Number(exchangeRate);
+    const rateLabel = Number.isFinite(parsedRate) ? String(parsedRate).replace('.', '_') : 'rate';
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存日本成本导入结果',
+      defaultPath: `日本成本数据导入结果_${rateLabel}_${path.parse(filePath).name}.xlsx`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Japan Cost Import Error:', error);
     return { success: false, error: error.message };
   }
 });
