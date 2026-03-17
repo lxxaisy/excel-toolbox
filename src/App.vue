@@ -25,7 +25,7 @@
         <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
           @click="currentTab = 'voucher-reconcile'">
           <span class="icon">📋</span>
-          凭证制表人匹配
+          EDS部门成本导入
         </div>
         <div class="nav-item" :class="{ active: currentTab === 'dept-expand' }" @click="currentTab = 'dept-expand'">
           <span class="icon">🏢</span>

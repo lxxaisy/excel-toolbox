@@ -372,12 +372,16 @@ export async function reconcileVouchers(filePath) {
         }
 
         // Rule 8: 恒道 OR 乐橙
-        if ((originalAccountBook.includes("恒道") || originalAccountBook.includes("乐橙"))) {
+        if ((originalAccountBook.includes("乐橙"))) {
             const exclusions = ["职工薪金", "员工保险费", "公积金", "奖金"];
             const hasExclusion = exclusions.some(k => accountName.includes(k));
             if (!hasExclusion) {
                 markText = "计入";
             }
+        }
+
+        if ((originalAccountBook.includes("恒道") && (accountName.includes("折旧") || accountName.includes("福利费")))) {
+            markText = "计入";
         }
 
         // Rule 9: 顺利 OR 穹创
