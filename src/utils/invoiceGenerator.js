@@ -22,7 +22,7 @@ export async function generateInvoices(dataFilePath, outputDir) {
         }
 
         // 2. Define Templates Base Info
-        const templateBaseDir = '/Users/lxxaisy/bigbaby/BigbabyEelectron/Desktop/excel-toolbox/vba';
+        const templateBaseDir = path.resolve(__dirname, '../../vba');
         const templateDefinitions = {
             customsInvoice: {
                 baseName: '报关发票模板',
