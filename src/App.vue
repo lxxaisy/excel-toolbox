@@ -41,6 +41,11 @@
           <span class="icon">🇯🇵</span>
           日本成本数据导入
         </div>
+        <div class="nav-item" :class="{ active: currentTab === 'profit-loss-subject-filter' }"
+          @click="currentTab = 'profit-loss-subject-filter'">
+          <span class="icon">🧾</span>
+          用友损益结转-科目筛选
+        </div>
         <div class="nav-item disabled">
           <span class="icon">🚧</span>
           更多功能开发中...
@@ -62,6 +67,7 @@
         <DeptExpand v-if="currentTab === 'dept-expand'" />
         <InvoiceGenerator v-if="currentTab === 'invoice-generator'" />
         <JapanCostImport v-if="currentTab === 'japan-cost-import'" />
+        <ProfitLossSubjectFilter v-if="currentTab === 'profit-loss-subject-filter'" />
       </section>
 
       <!-- Console / Log Panel -->
@@ -88,6 +94,7 @@ import VoucherReconciliation from './components/VoucherReconciliation.vue';
 import DeptExpand from './components/DeptExpand.vue';
 import InvoiceGenerator from './components/InvoiceGenerator.vue';
 import JapanCostImport from './components/JapanCostImport.vue';
+import ProfitLossSubjectFilter from './components/ProfitLossSubjectFilter.vue';
 
 const currentTab = ref('bank-reconcile-fuzzy');
 const logs = ref([{ time: new Date().toLocaleTimeString(), message: '[System] 准备就绪 (Vue 3)', type: 'info' }]);
@@ -101,6 +108,7 @@ const currentTitle = computed(() => {
   if (currentTab.value === 'dept-expand') return '部门批量新增';
   if (currentTab.value === 'invoice-generator') return '发票/合同批量生成';
   if (currentTab.value === 'japan-cost-import') return '日本成本数据导入';
+  if (currentTab.value === 'profit-loss-subject-filter') return '用友损益结转-科目筛选';
   return '未命名功能';
 });
 

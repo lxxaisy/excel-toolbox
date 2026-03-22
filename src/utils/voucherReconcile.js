@@ -30,9 +30,10 @@ import path from 'path';
  * 13. "核算账簿"列内容根据 "公司名称参照表.xlsx" 进行替换
  * 
  * @param {string} filePath - Excel 文件路径
+ * @param {string} affiliatedDeptFilePath - 挂靠业务部门 Excel 文件路径
  * @returns {Promise<Buffer>} - 处理后的 Excel Buffer
  */
-export async function reconcileVouchers(filePath) {
+export async function reconcileVouchers(filePath, affiliatedDeptFilePath) {
     console.log("Starting reconcileVouchers for:", filePath);
     const fileBuffer = fs.readFileSync(filePath);
     // 使用 XLSX 读取，但后续写出时会用到 xlsx-js-style 的功能
@@ -67,11 +68,10 @@ export async function reconcileVouchers(filePath) {
     }
 
     // --- Load Affiliated Departments (挂靠业务部门) ---
-    const affiliatedDeptPath = path.resolve(__dirname, '../../vba/挂靠业务部门.xlsx');
     const affiliatedDepts = new Set();
     try {
-        if (fs.existsSync(affiliatedDeptPath)) {
-            const adWb = XLSX.readFile(affiliatedDeptPath);
+        if (affiliatedDeptFilePath && fs.existsSync(affiliatedDeptFilePath)) {
+            const adWb = XLSX.readFile(affiliatedDeptFilePath);
             const adSheet = adWb.Sheets[adWb.SheetNames[0]];
             const adData = XLSX.utils.sheet_to_json(adSheet, { header: 1 });
             // Read all rows, assuming column 0 is the code
@@ -81,9 +81,9 @@ export async function reconcileVouchers(filePath) {
                     affiliatedDepts.add(String(row[0]).trim());
                 }
             }
-            console.log(`Loaded ${affiliatedDepts.size} affiliated departments from: ${affiliatedDeptPath}`);
+            console.log(`Loaded ${affiliatedDepts.size} affiliated departments from: ${affiliatedDeptFilePath}`);
         } else {
-            console.warn("Affiliated departments file not found at:", affiliatedDeptPath);
+            console.warn("Affiliated departments file not found at:", affiliatedDeptFilePath);
         }
     } catch (e) {
         console.error("Error loading affiliated departments:", e);

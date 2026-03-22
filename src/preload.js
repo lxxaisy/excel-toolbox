@@ -11,8 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Voucher Reconciliation APIs
   selectFile: () => ipcRenderer.invoke('dialog:openFile'),
-  reconcileVouchers: (filePath) => ipcRenderer.invoke('voucher:reconcile', filePath),
+  reconcileVouchers: (data) => ipcRenderer.invoke('voucher:reconcile', data),
   expandDept: (filePath) => ipcRenderer.invoke('dept:expand', filePath),
   generateInvoice: (filePath) => ipcRenderer.invoke('invoice:generate', filePath),
-  importJapanCost: (data) => ipcRenderer.invoke('japan-cost:import', data)
+  importJapanCost: (data) => ipcRenderer.invoke('japan-cost:import', data),
+  filterProfitLossSubjects: (filePath) => ipcRenderer.invoke('profit-loss-subject:filter', filePath)
 });

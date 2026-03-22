@@ -9,6 +9,7 @@ import { reconcileVouchers } from './utils/voucherReconcile.js';
 import { expandDept } from './utils/deptExpand.js';
 import { generateInvoices } from './utils/invoiceGenerator.js';
 import { importJapanCost } from './utils/japanCostImport.js';
+import { filterProfitLossSubjects } from './utils/profitLossSubjectFilter.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -147,9 +148,9 @@ ipcMain.handle('bank:reconcile-balance', async (event, { configPath, bankPath, c
 });
 
 // 4. Voucher Reconciliation Handler
-ipcMain.handle('voucher:reconcile', async (event, filePath) => {
+ipcMain.handle('voucher:reconcile', async (event, { filePath, affiliatedDeptFilePath }) => {
   try {
-    const buffer = await reconcileVouchers(filePath);
+    const buffer = await reconcileVouchers(filePath, affiliatedDeptFilePath);
 
     // Prompt save
     const { canceled, filePath: savePath } = await dialog.showSaveDialog({
@@ -233,6 +234,28 @@ ipcMain.handle('japan-cost:import', async (event, { filePath, exchangeRate }) =>
     return { success: true, savePath };
   } catch (error) {
     console.error('Japan Cost Import Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 9. Profit/Loss Subject Filter Handler
+ipcMain.handle('profit-loss-subject:filter', async (event, filePath) => {
+  try {
+    const buffer = await filterProfitLossSubjects(filePath);
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存用友损益结转-科目筛选结果',
+      defaultPath: `用友损益结转-科目筛选结果_${path.basename(filePath)}`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Profit/Loss Subject Filter Error:', error);
     return { success: false, error: error.message };
   }
 });

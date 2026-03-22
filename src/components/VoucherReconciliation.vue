@@ -30,9 +30,26 @@
                     </div>
                 </div>
 
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <label class="text-base font-semibold text-slate-700">选择挂靠业务部门文件</label>
+                        <el-tag type="warning" size="small" effect="plain">每次按最新上传文件读取</el-tag>
+                    </div>
+
+                    <div
+                        class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg border border-slate-200 border-dashed">
+                        <el-button type="primary" plain @click="selectAffiliatedDeptFile">
+                            选择文件
+                        </el-button>
+                        <div class="flex-1 truncate text-sm font-mono text-slate-600">
+                            {{ affiliatedDeptFilePath || '请选择挂靠业务部门 .xlsx / .xls 文件' }}
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Action -->
                 <div class="pt-6 border-t border-slate-100">
-                    <el-button type="primary" size="large" class="w-full" :disabled="!filePath || loading"
+                    <el-button type="primary" size="large" class="w-full" :disabled="!filePath || !affiliatedDeptFilePath || loading"
                         :loading="loading" @click="handleReconcile">
                         {{ loading ? '处理中...' : '开始匹配并导出' }}
                     </el-button>
@@ -48,6 +65,7 @@ import { ref } from 'vue';
 import { ElMessage } from 'element-plus';
 
 const filePath = ref('');
+const affiliatedDeptFilePath = ref('');
 const loading = ref(false);
 
 const selectFile = async () => {
@@ -62,12 +80,27 @@ const selectFile = async () => {
     }
 };
 
+const selectAffiliatedDeptFile = async () => {
+    try {
+        const path = await window.electronAPI.selectFile();
+        if (path) {
+            affiliatedDeptFilePath.value = path;
+        }
+    } catch (error) {
+        console.error('Select affiliated department file error:', error);
+        ElMessage.error('选择挂靠业务部门文件失败');
+    }
+};
+
 const handleReconcile = async () => {
-    if (!filePath.value) return;
+    if (!filePath.value || !affiliatedDeptFilePath.value) return;
 
     loading.value = true;
     try {
-        const result = await window.electronAPI.reconcileVouchers(filePath.value);
+        const result = await window.electronAPI.reconcileVouchers({
+            filePath: filePath.value,
+            affiliatedDeptFilePath: affiliatedDeptFilePath.value
+        });
         if (result.success) {
             ElMessage.success(`处理成功！文件已保存至: ${result.savePath}`);
         } else {
