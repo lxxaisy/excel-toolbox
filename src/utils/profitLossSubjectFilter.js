@@ -1,7 +1,6 @@
 import * as XLSX from 'xlsx-js-style';
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
 
 const RED_FILL_STYLE = {
   fill: {
@@ -72,11 +71,7 @@ function ensureStyledCell(sheet, rowIndex, colIndex) {
   return sheet[cellAddress];
 }
 
-export async function filterProfitLossSubjects(filePath) {
-  const templateBaseDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'vba')
-    : path.resolve(app.getAppPath(), 'vba');
-
+export async function filterProfitLossSubjects(filePath, templateBaseDir) {
   const ruleFilePath = path.join(templateBaseDir, '会计科目列表.xls');
   if (!fs.existsSync(ruleFilePath)) {
     throw new Error(`规则表不存在: ${ruleFilePath}`);

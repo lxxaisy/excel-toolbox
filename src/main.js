@@ -52,6 +52,13 @@ const createWindow = () => {
   // mainWindow.webContents.openDevTools();
 };
 
+// --- Helpers ---
+const getTemplateBaseDir = () => {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'vba')
+    : path.resolve(app.getAppPath(), 'vba');
+};
+
 // --- IPC Handlers ---
 
 // 1. File Selection Handler
@@ -150,7 +157,8 @@ ipcMain.handle('bank:reconcile-balance', async (event, { configPath, bankPath, c
 // 4. Voucher Reconciliation Handler
 ipcMain.handle('voucher:reconcile', async (event, { filePath, affiliatedDeptFilePath }) => {
   try {
-    const buffer = await reconcileVouchers(filePath, affiliatedDeptFilePath);
+    const templateBaseDir = getTemplateBaseDir();
+    const buffer = await reconcileVouchers(filePath, affiliatedDeptFilePath, templateBaseDir);
 
     // Prompt save
     const { canceled, filePath: savePath } = await dialog.showSaveDialog({
@@ -205,7 +213,8 @@ ipcMain.handle('invoice:generate', async (event, filePath) => {
     const outputDir = filePaths[0];
 
     // 2. Generate Invoices
-    const result = await generateInvoices(filePath, outputDir);
+    const templateBaseDir = getTemplateBaseDir();
+    const result = await generateInvoices(filePath, outputDir, templateBaseDir);
     return result;
 
   } catch (error) {
@@ -241,7 +250,8 @@ ipcMain.handle('japan-cost:import', async (event, { filePath, exchangeRate }) =>
 // 9. Profit/Loss Subject Filter Handler
 ipcMain.handle('profit-loss-subject:filter', async (event, filePath) => {
   try {
-    const buffer = await filterProfitLossSubjects(filePath);
+    const templateBaseDir = getTemplateBaseDir();
+    const buffer = await filterProfitLossSubjects(filePath, templateBaseDir);
     const { canceled, filePath: savePath } = await dialog.showSaveDialog({
       title: '保存用友损益结转-科目筛选结果',
       defaultPath: `用友损益结转-科目筛选结果_${path.basename(filePath)}`,

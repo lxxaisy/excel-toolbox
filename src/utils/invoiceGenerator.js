@@ -2,15 +2,15 @@
 import XLSX from 'xlsx-js-style';
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
 
 /**
  * Generate invoices based on uploaded Excel file and templates.
  * @param {string} dataFilePath - Path to the uploaded Excel file.
  * @param {string} outputDir - Directory to save the generated files.
+ * @param {string} templateBaseDir - Directory containing templates.
  * @returns {Promise<Object>} - Result object.
  */
-export async function generateInvoices(dataFilePath, outputDir) {
+export async function generateInvoices(dataFilePath, outputDir, templateBaseDir) {
     try {
         // 1. Read Data File using XLSX
         const dataBuffer = fs.readFileSync(dataFilePath);
@@ -23,11 +23,6 @@ export async function generateInvoices(dataFilePath, outputDir) {
         }
 
         // 2. Define Templates Base Info
-        // Determine the correct path for templates (works in both dev and production)
-        const templateBaseDir = app.isPackaged
-            ? path.join(process.resourcesPath, 'vba')
-            : path.resolve(app.getAppPath(), 'vba');
-
         console.log('Template Base Directory:', templateBaseDir);
 
         const templateDefinitions = {

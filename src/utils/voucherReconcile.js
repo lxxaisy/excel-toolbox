@@ -2,7 +2,6 @@
 import * as XLSX from 'xlsx-js-style';
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
 
 /**
  * 凭证制表人匹配逻辑 (增强版 - 支持样式和高级筛选)
@@ -31,20 +30,16 @@ import { app } from 'electron';
  * 
  * @param {string} filePath - Excel 文件路径
  * @param {string} affiliatedDeptFilePath - 挂靠业务部门 Excel 文件路径
+ * @param {string} templateBaseDir - 模板文件夹路径
  * @returns {Promise<Buffer>} - 处理后的 Excel Buffer
  */
-export async function reconcileVouchers(filePath, affiliatedDeptFilePath) {
+export async function reconcileVouchers(filePath, affiliatedDeptFilePath, templateBaseDir) {
     console.log("Starting reconcileVouchers for:", filePath);
     const fileBuffer = fs.readFileSync(filePath);
     // 使用 XLSX 读取，但后续写出时会用到 xlsx-js-style 的功能
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
 
     // --- Load Company Name Mapping ---
-    // Determine the correct path for templates (works in both dev and production)
-    const templateBaseDir = app.isPackaged
-        ? path.join(process.resourcesPath, 'vba')
-        : path.resolve(app.getAppPath(), 'vba');
-    
     const mappingFilePath = path.join(templateBaseDir, '公司名称参照表.xlsx');
     let companyMap = new Map();
 
