@@ -2,6 +2,7 @@
 import XLSX from 'xlsx-js-style';
 import fs from 'fs';
 import path from 'path';
+import { app } from 'electron';
 
 /**
  * Generate invoices based on uploaded Excel file and templates.
@@ -22,7 +23,13 @@ export async function generateInvoices(dataFilePath, outputDir) {
         }
 
         // 2. Define Templates Base Info
-        const templateBaseDir = path.resolve(__dirname, '../../vba');
+        // Determine the correct path for templates (works in both dev and production)
+        const templateBaseDir = app.isPackaged
+            ? path.join(process.resourcesPath, 'vba')
+            : path.resolve(app.getAppPath(), 'vba');
+
+        console.log('Template Base Directory:', templateBaseDir);
+
         const templateDefinitions = {
             customsInvoice: {
                 baseName: '报关发票模板',

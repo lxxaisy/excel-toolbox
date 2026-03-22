@@ -1,8 +1,8 @@
 
 import * as XLSX from 'xlsx-js-style';
 import fs from 'fs';
-
 import path from 'path';
+import { app } from 'electron';
 
 /**
  * 凭证制表人匹配逻辑 (增强版 - 支持样式和高级筛选)
@@ -40,11 +40,12 @@ export async function reconcileVouchers(filePath, affiliatedDeptFilePath) {
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
 
     // --- Load Company Name Mapping ---
-    // Assuming the mapping file is at vba/公司名称参照表.xlsx relative to project root
-    // We need to resolve the path correctly. Assuming this script is running in Electron context.
-    // Try to find the file relative to the input file or a fixed location.
-    // For this environment: /Users/lxxaisy/bigbaby/BigbabyEelectron/Desktop/excel-toolbox/vba/公司名称参照表.xlsx
-    const mappingFilePath = path.resolve(__dirname, '../../vba/公司名称参照表.xlsx');
+    // Determine the correct path for templates (works in both dev and production)
+    const templateBaseDir = app.isPackaged
+        ? path.join(process.resourcesPath, 'vba')
+        : path.resolve(app.getAppPath(), 'vba');
+    
+    const mappingFilePath = path.join(templateBaseDir, '公司名称参照表.xlsx');
     let companyMap = new Map();
 
     try {
