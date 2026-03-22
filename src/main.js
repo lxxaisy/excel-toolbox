@@ -55,7 +55,7 @@ const createWindow = () => {
 // --- Helpers ---
 const getTemplateBaseDir = () => {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'vba')
+    ? process.resourcesPath
     : path.resolve(app.getAppPath(), 'vba');
 };
 
