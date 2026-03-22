@@ -5,13 +5,6 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icon', // 自动匹配 assets/icon.icns (macOS) 和 assets/icon.ico (Windows)
-    extraResource: [
-      './vba/会计科目列表.xls',
-      './vba/公司名称参照表.xlsx',
-      './vba/报关发票模板.xls',
-      './vba/报关合同模板.xlsx',
-      './vba/税务局发票模版.xls'
-    ]
   },
   rebuildConfig: {},
   makers: [

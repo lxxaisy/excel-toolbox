@@ -54,9 +54,7 @@ const createWindow = () => {
 
 // --- Helpers ---
 const getTemplateBaseDir = () => {
-  return app.isPackaged
-    ? process.resourcesPath
-    : path.resolve(app.getAppPath(), 'vba');
+  return path.resolve(app.getAppPath(), 'vba');
 };
 
 // --- IPC Handlers ---
