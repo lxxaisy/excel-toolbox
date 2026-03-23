@@ -5,6 +5,10 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icon', // 自动匹配 assets/icon.icns (macOS) 和 assets/icon.ico (Windows)
+    ignore: (file) => {
+      if (!file) return false;
+      return !(file.startsWith('/.vite') || file.startsWith('/vba'));
+    },
   },
   rebuildConfig: {},
   makers: [
