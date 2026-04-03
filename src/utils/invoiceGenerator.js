@@ -1,258 +1,413 @@
-
 import XLSX from 'xlsx-js-style';
+import XlsxPopulate from 'xlsx-populate';
 import fs from 'fs';
 import path from 'path';
 
-/**
- * Generate invoices based on uploaded Excel file and templates.
- * @param {string} dataFilePath - Path to the uploaded Excel file.
- * @param {string} outputDir - Directory to save the generated files.
- * @param {string} templateBaseDir - Directory containing templates.
- * @returns {Promise<Object>} - Result object.
- */
-export async function generateInvoices(dataFilePath, outputDir, templateBaseDir) {
-    try {
-        // 1. Read Data File using XLSX
-        const dataBuffer = fs.readFileSync(dataFilePath);
-        const dataWorkbook = XLSX.read(dataBuffer, { type: 'buffer' });
-        const dataSheet = dataWorkbook.Sheets[dataWorkbook.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(dataSheet, { header: 1, defval: '' });
-
-        if (data.length < 2) {
-            throw new Error("Uploaded file is empty or has only headers.");
-        }
-
-        // 2. Define Templates Base Info
-        console.log('Template Base Directory:', templateBaseDir);
-
-        const templateDefinitions = {
-            customsInvoice: {
-                baseName: '报关发票模板',
-                outputName: '报关发票',
-            },
-            customsContract: {
-                baseName: '报关合同模板',
-                outputName: '报关合同',
-            },
-            taxInvoice: {
-                baseName: '税务局发票模版', // Note: original file has '模版'
-                outputName: '税务局发票',
-            }
-        };
-
-        // 3. Load Templates into XLSX Workbooks
-        const outputWorkbooks = {};
-        const warnings = [];
-
-        const loadTemplate = (key, def) => {
-            const xlsxPath = path.join(templateBaseDir, `${def.baseName}.xlsx`);
-            const xlsPath = path.join(templateBaseDir, `${def.baseName}.xls`);
-            let templatePath = '';
-            let ext = '.xlsx';
-
-            if (fs.existsSync(xlsxPath)) {
-                templatePath = xlsxPath;
-            } else if (fs.existsSync(xlsPath)) {
-                templatePath = xlsPath;
-                warnings.push(`模板 "${def.outputName}" 是 .xls 格式，将输出为 .xlsx。`);
-            } else {
-                throw new Error(`Template not found for ${def.outputName}. Checked: ${xlsxPath} and ${xlsPath}`);
-            }
-
-            const workbook = XLSX.readFile(templatePath, { cellStyles: true, cellDates: true, cellNF: true });
-            const sheetName = workbook.SheetNames[0];
-            const templateSheet = workbook.Sheets[sheetName];
-
-            return {
-                templateSheet,
-                ext,
-                name: def.outputName,
-                outputWorkbook: XLSX.utils.book_new()
-            };
-        };
-
-        for (const key in templateDefinitions) {
-            outputWorkbooks[key] = loadTemplate(key, templateDefinitions[key]);
-        }
-
-        // Helper to format date
-        const formatDate = (val) => {
-            if (!val) return '';
-            if (val instanceof Date) {
-                return val.toLocaleDateString();
-            }
-            if (typeof val === 'number' && val > 20000) {
-                if (XLSX.SSF) {
-                    const date = XLSX.SSF.parse_date_code(val);
-                    return `${date.y}/${date.m}/${date.d}`;
-                }
-                return String(val);
-            }
-            return String(val);
-        };
-
-        const DATE_2020_12_31_SERIAL = 44196;
-
-        // 4. Process Data
-        for (let i = 1; i < data.length; i++) {
-            const row = data[i];
-            if (!row || row.length === 0) continue;
-
-            const entryDate = row[0]; // A
-            const contractNo = row[1]; // B
-            const taxNo = row[2]; // C
-            const jpyAmountE = row[4]; // E
-            const usdAmountK = row[10]; // K
-            const customer = row[11]; // L
-            const chineseName = row[12]; // M
-            const jpyAmountO = row[14]; // O
-            const longDate = row[15]; // P
-
-            if (!customer) continue;
-
-            const safeCustomer = String(customer).replace(/[\\/?*\[\]]/g, '');
-            const sheetName = `${safeCustomer}_${i}`;
-
-            // Process each template
-            processTemplateRow(outputWorkbooks.customsInvoice, sheetName, [
-                { type: 'replace', find: 'JPY2418400', replace: jpyAmountO },
-                { type: 'append', find: '购货单位 THE BUYER:', label: '购货单位 THE BUYER:', value: customer, targetColumn: 5 }, // Column E
-                { type: 'append', find: 'THE BUYER', label: '购货单位 THE BUYER:', value: customer, targetColumn: 5 },
-                { type: 'append', find: '发票号 INVOICE NO.:', label: '发票号 INVOICE NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: 'INVOICE NO.', label: '发票号 INVOICE NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: '合同号 CONTRACT NO.:', label: '合同号 CONTRACT NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: 'CONTRACT NO.', label: '合同号 CONTRACT NO.:', value: contractNo, targetColumn: 5 },
-                { type: 'append', find: '开票日期 INVOICE DATE:', label: '开票日期 INVOICE DATE:', value: formatDate(entryDate), targetColumn: 5 },
-                { type: 'append', find: 'INVOICE DATE', label: '开票日期 INVOICE DATE:', value: formatDate(entryDate), targetColumn: 5 },
-            ]);
-
-            processTemplateRow(outputWorkbooks.customsContract, sheetName, [
-                { type: 'replace', find: '260000', replace: jpyAmountE },
-                // { type: 'replace', find: '2020/12/31', replace: longDate, isDate: true, dateSerial: DATE_2020_12_31_SERIAL },
-                { type: 'append', find: '甲方：', label: '甲方：', value: customer },
-                { type: 'append', find: '合同编号：', label: '合同编号：', value: contractNo },
-                { type: 'append', find: '合同执行日期：', label: '合同执行日期：', value: formatDate(entryDate) },
-            ]);
-
-            processTemplateRow(outputWorkbooks.taxInvoice, sheetName, [
-                { type: 'replace', find: '2405', replace: usdAmountK },
-                { type: 'append', find: 'INVOICE NO:', label: 'INVOICE NO:', value: taxNo },
-                { type: 'append', find: 'CONTRACT NO.:', label: 'CONTRACT NO.:', value: contractNo },
-                { type: 'append', find: 'DATE:', label: '    DATE: ', value: formatDate(entryDate) },
-                { type: 'append', find: '结算单号：', label: '结算单号：', value: taxNo },
-                { type: 'append', find: '合同号：', label: '合同号：', value: contractNo },
-                { type: 'append', find: '日期：', label: '    日期：', value: formatDate(entryDate) },
-                { type: 'append', find: 'FOR ACCOUNT AND RISK OF MESSRS:', label: 'FOR ACCOUNT AND RISK OF MESSRS:', value: customer, targetColumn: 4 },
-                { type: 'append', find: '风险承担者：', label: '风险承担者：', value: chineseName, targetColumn: 3 },
-            ]);
-        }
-
-        // 5. Save Files
-        const saveFiles = [];
-        const baseName = path.basename(dataFilePath, path.extname(dataFilePath));
-
-        for (const key in outputWorkbooks) {
-            const item = outputWorkbooks[key];
-            const filename = `${item.name}_${baseName}${item.ext}`;
-            const fp = path.join(outputDir, filename);
-            const outBuffer = XLSX.write(item.outputWorkbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
-            fs.writeFileSync(fp, outBuffer);
-            saveFiles.push(fp);
-        }
-
-        return { success: true, files: saveFiles, warnings: warnings };
-
-    } catch (error) {
-        console.error('Invoice Generation Error:', error);
-        return { success: false, error: error.message };
+function detectExcelContainerType(filePath) {
+    const fileBuffer = fs.readFileSync(filePath);
+    if (fileBuffer.length >= 4 && fileBuffer[0] === 0x50 && fileBuffer[1] === 0x4b) {
+        return 'zip';
     }
-}
 
-function truncateSheetName(name) {
-    return name.length > 31 ? name.substring(0, 31) : name;
-}
-
-/**
- * Process a row for a specific template workbook using XlsxPopulate
- */
-function processTemplateRow(templateItem, sheetName, rules) {
-    const newSheet = cloneSheet(templateItem.templateSheet);
-    applyRulesToSheet(newSheet, rules);
-    XLSX.utils.book_append_sheet(templateItem.outputWorkbook, newSheet, truncateSheetName(sheetName));
-}
-
-function cloneSheet(sheet) {
-    if (typeof structuredClone === 'function') {
-        return structuredClone(sheet);
+    if (
+        fileBuffer.length >= 8 &&
+        fileBuffer[0] === 0xd0 &&
+        fileBuffer[1] === 0xcf &&
+        fileBuffer[2] === 0x11 &&
+        fileBuffer[3] === 0xe0 &&
+        fileBuffer[4] === 0xa1 &&
+        fileBuffer[5] === 0xb1 &&
+        fileBuffer[6] === 0x1a &&
+        fileBuffer[7] === 0xe1
+    ) {
+        return 'cfb';
     }
-    return JSON.parse(JSON.stringify(sheet));
+
+    return 'unknown';
 }
 
-function setCellValue(cell, value) {
-    cell.v = value;
-    if (typeof value === 'number') {
-        cell.t = 'n';
-    } else {
-        cell.t = 's';
+function readDataRows(dataFilePath) {
+    const dataBuffer = fs.readFileSync(dataFilePath);
+    const dataWorkbook = XLSX.read(dataBuffer, { type: 'buffer' });
+    const dataSheet = dataWorkbook.Sheets[dataWorkbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(dataSheet, { header: 1, defval: '' });
+
+    if (data.length < 2) {
+        throw new Error('上传文件为空，或只有表头');
     }
+
+    const entries = [];
+    for (let i = 1; i < data.length; i += 1) {
+        const row = data[i];
+        if (!row || row.length === 0) {
+            continue;
+        }
+
+        const customer = row[11];
+        if (!customer) {
+            continue;
+        }
+
+        entries.push({
+            rowIndex: i,
+            entryDate: row[0],
+            contractNo: row[1],
+            taxNo: row[2],
+            jpyAmountE: row[4],
+            usdAmountK: row[10],
+            customer,
+            chineseName: row[12],
+            jpyAmountO: row[14]
+        });
+    }
+
+    if (entries.length === 0) {
+        throw new Error('上传文件中未找到可生成的客户数据');
+    }
+
+    return entries;
 }
 
-function applyRulesToSheet(sheet, rules) {
-    if (!sheet || !sheet['!ref']) return;
-    const range = XLSX.utils.decode_range(sheet['!ref']);
+function formatDate(value) {
+    if (!value) {
+        return '';
+    }
 
-    for (let R = range.s.r; R <= range.e.r; ++R) {
-        for (let C = range.s.c; C <= range.e.c; ++C) {
-            const addr = XLSX.utils.encode_cell({ r: R, c: C });
-            const cell = sheet[addr];
-            if (!cell || cell.v === undefined || cell.v === null) continue;
+    if (value instanceof Date) {
+        return `${value.getFullYear()}/${value.getMonth() + 1}/${value.getDate()}`;
+    }
 
-            const val = cell.v;
-            const cellValStr = String(val);
+    if (typeof value === 'number' && value > 20000 && XLSX.SSF) {
+        const date = XLSX.SSF.parse_date_code(value);
+        if (date) {
+            return `${date.y}/${date.m}/${date.d}`;
+        }
+    }
+
+    return String(value);
+}
+
+function buildRulesByTemplate(entry) {
+    return {
+        customsInvoice: [
+            { type: 'replace', find: 'JPY2418400', replace: entry.jpyAmountO },
+            { type: 'append', find: '购货单位 THE BUYER:', value: entry.customer, targetColumn: 5 },
+            { type: 'append', find: 'THE BUYER', value: entry.customer, targetColumn: 5 },
+            { type: 'append', find: '发票号 INVOICE NO.:', value: entry.contractNo, targetColumn: 5 },
+            { type: 'append', find: 'INVOICE NO.', value: entry.contractNo, targetColumn: 5 },
+            { type: 'append', find: '合同号 CONTRACT NO.:', value: entry.contractNo, targetColumn: 5 },
+            { type: 'append', find: 'CONTRACT NO.', value: entry.contractNo, targetColumn: 5 },
+            { type: 'append', find: '开票日期 INVOICE DATE:', value: formatDate(entry.entryDate), targetColumn: 5 },
+            { type: 'append', find: 'INVOICE DATE', value: formatDate(entry.entryDate), targetColumn: 5 }
+        ],
+        customsContract: [
+            { type: 'replace', find: '260000', replace: entry.jpyAmountE },
+            { type: 'append', find: '甲方：', value: entry.customer },
+            { type: 'append', find: '合同编号：', value: entry.contractNo },
+            { type: 'append', find: '合同执行日期：', value: formatDate(entry.entryDate) }
+        ],
+        taxInvoice: [
+            { type: 'replace', find: '2405', replace: entry.usdAmountK },
+            { type: 'append', find: 'INVOICE NO:', value: entry.taxNo },
+            { type: 'append', find: 'CONTRACT NO.:', value: entry.contractNo },
+            { type: 'append', find: 'DATE:', value: formatDate(entry.entryDate) },
+            { type: 'append', find: '结算单号：', value: entry.taxNo },
+            { type: 'append', find: '合同号：', value: entry.contractNo },
+            { type: 'append', find: '日期：', value: formatDate(entry.entryDate) },
+            { type: 'append', find: 'FOR ACCOUNT AND RISK OF MESSRS:', value: entry.customer, targetColumn: 4 },
+            { type: 'append', find: '风险承担者：', value: entry.chineseName, targetColumn: 3 }
+        ]
+    };
+}
+
+function sanitizeSheetName(name) {
+    return String(name || 'Sheet').replace(/[\\/?*\[\]:]/g, '').trim() || 'Sheet';
+}
+
+function buildUniqueSheetName(baseName, usedNames) {
+    const trimmedBaseName = sanitizeSheetName(baseName).slice(0, 31) || 'Sheet';
+    let candidate = trimmedBaseName;
+    let suffix = 1;
+
+    while (usedNames.has(candidate)) {
+        const suffixText = `_${suffix}`;
+        const allowedBaseLength = Math.max(1, 31 - suffixText.length);
+        candidate = `${trimmedBaseName.slice(0, allowedBaseLength)}${suffixText}`;
+        suffix += 1;
+    }
+
+    usedNames.add(candidate);
+    return candidate;
+}
+
+function applyRulesToPopulateSheet(sheet, rules) {
+    const usedRange = sheet.usedRange();
+    if (!usedRange) {
+        return;
+    }
+
+    const values = usedRange.value();
+    for (let rowIndex = 0; rowIndex < values.length; rowIndex += 1) {
+        const row = values[rowIndex] || [];
+
+        for (let colIndex = 0; colIndex < row.length; colIndex += 1) {
+            const value = row[colIndex];
+            if (value === null || value === undefined || value === '') {
+                continue;
+            }
+
+            const cell = sheet.cell(rowIndex + 1, colIndex + 1);
+            const cellValueText = String(value);
             let processed = false;
 
             for (const rule of rules) {
-                if (rule.type !== 'replace') continue;
-                let match = false;
-                const findStr = String(rule.find);
-
-                if (cellValStr.includes(findStr)) {
-                    match = true;
-                } else if (rule.isDate && typeof val === 'number' && Math.abs(val - rule.dateSerial) < 0.1) {
-                    match = true;
-                } else if (typeof val === 'number' && val == rule.find) {
-                    match = true;
+                if (rule.type !== 'replace') {
+                    continue;
                 }
 
-                if (match) {
-                    if (cellValStr === findStr || (typeof val === 'number' && val == rule.find) || (rule.isDate && match)) {
-                        setCellValue(cell, rule.replace);
-                    } else {
-                        setCellValue(cell, cellValStr.replace(findStr, rule.replace));
-                    }
-                    processed = true;
-                    break;
+                const findText = String(rule.find);
+                const matched = cellValueText.includes(findText) || value === rule.find;
+                if (!matched) {
+                    continue;
                 }
+
+                if (cellValueText === findText || value === rule.find) {
+                    cell.value(rule.replace ?? '');
+                } else {
+                    cell.value(cellValueText.replace(findText, String(rule.replace ?? '')));
+                }
+                processed = true;
+                break;
             }
 
-            if (processed) continue;
+            if (processed) {
+                continue;
+            }
 
             for (const rule of rules) {
-                if (rule.type !== 'append') continue;
-                if (!cellValStr.includes(rule.find)) continue;
+                if (rule.type !== 'append' || !cellValueText.includes(rule.find)) {
+                    continue;
+                }
 
-                const targetCol = rule.targetColumn ? rule.targetColumn - 1 : C + 1;
-                const targetAddr = XLSX.utils.encode_cell({ r: R, c: targetCol });
+                const targetColumn = rule.targetColumn || (colIndex + 2);
+                sheet.cell(rowIndex + 1, targetColumn).value(rule.value ?? '');
+                break;
+            }
+        }
+    }
+}
+
+function applyRulesToLegacySheet(sheet, rules) {
+    if (!sheet || !sheet['!ref']) {
+        return;
+    }
+
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+        for (let colIndex = range.s.c; colIndex <= range.e.c; colIndex += 1) {
+            const addr = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+            const cell = sheet[addr];
+            if (!cell || cell.v === undefined || cell.v === null) {
+                continue;
+            }
+
+            const value = cell.v;
+            const cellValueText = String(value);
+            let processed = false;
+
+            for (const rule of rules) {
+                if (rule.type !== 'replace') {
+                    continue;
+                }
+
+                const findText = String(rule.find);
+                const matched = cellValueText.includes(findText) || value === rule.find;
+                if (!matched) {
+                    continue;
+                }
+
+                setLegacyCellValue(
+                    cell,
+                    cellValueText === findText || value === rule.find
+                        ? (rule.replace ?? '')
+                        : cellValueText.replace(findText, String(rule.replace ?? ''))
+                );
+                processed = true;
+                break;
+            }
+
+            if (processed) {
+                continue;
+            }
+
+            for (const rule of rules) {
+                if (rule.type !== 'append' || !cellValueText.includes(rule.find)) {
+                    continue;
+                }
+
+                const targetCol = rule.targetColumn ? rule.targetColumn - 1 : colIndex + 1;
+                const targetAddr = XLSX.utils.encode_cell({ r: rowIndex, c: targetCol });
                 const targetCell = sheet[targetAddr] || {};
-
-                const appendVal = rule.value !== undefined ? rule.value : '';
-                setCellValue(targetCell, appendVal);
-
+                setLegacyCellValue(targetCell, rule.value ?? '');
                 if (!sheet[targetAddr]) {
                     sheet[targetAddr] = targetCell;
                 }
                 break;
             }
         }
+    }
+}
+
+function setLegacyCellValue(cell, value) {
+    cell.v = value;
+    cell.t = typeof value === 'number' ? 'n' : 's';
+    if (cell.w) {
+        delete cell.w;
+    }
+}
+
+function cloneLegacySheet(sheet) {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(sheet);
+    }
+
+    return JSON.parse(JSON.stringify(sheet));
+}
+
+async function savePopulateWorkbook(item, entries, baseName) {
+    const workbook = await XlsxPopulate.fromFileAsync(item.templatePath);
+    const templateSheet = workbook.sheet(0);
+    const templateSheetName = templateSheet.name();
+    const usedNames = new Set(workbook.sheets().map((sheet) => sheet.name()));
+    let firstGeneratedSheet = null;
+
+    for (const entry of entries) {
+        const rules = buildRulesByTemplate(entry)[item.key];
+        const newSheetName = buildUniqueSheetName(`${entry.customer}_${entry.rowIndex}`, usedNames);
+        const newSheet = workbook.cloneSheet(templateSheet, newSheetName);
+        if (!firstGeneratedSheet) {
+            firstGeneratedSheet = newSheet;
+        }
+        applyRulesToPopulateSheet(newSheet, rules);
+    }
+
+    if (entries.length > 0 && workbook.sheets().length > 1) {
+        if (firstGeneratedSheet) {
+            firstGeneratedSheet.active(true);
+        }
+        workbook.sheet(templateSheetName).delete();
+    }
+
+    const outputPath = path.join(item.outputDir, `${item.outputName}_${baseName}.xlsx`);
+    await workbook.toFileAsync(outputPath);
+    return outputPath;
+}
+
+function saveLegacyWorkbook(item, entries, baseName) {
+    const workbook = XLSX.readFile(item.templatePath, { cellStyles: true, cellDates: true, cellNF: true });
+    const templateSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const outputWorkbook = XLSX.utils.book_new();
+    const usedNames = new Set();
+
+    for (const entry of entries) {
+        const rules = buildRulesByTemplate(entry)[item.key];
+        const clonedSheet = cloneLegacySheet(templateSheet);
+        applyRulesToLegacySheet(clonedSheet, rules);
+        const newSheetName = buildUniqueSheetName(`${entry.customer}_${entry.rowIndex}`, usedNames);
+        XLSX.utils.book_append_sheet(outputWorkbook, clonedSheet, newSheetName);
+    }
+
+    const outputPath = path.join(item.outputDir, `${item.outputName}_${baseName}.xlsx`);
+    const outBuffer = XLSX.write(outputWorkbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
+    fs.writeFileSync(outputPath, outBuffer);
+    return outputPath;
+}
+
+function resolveTemplateItems(templateBaseDir) {
+    const templateDefinitions = [
+        { key: 'customsInvoice', baseName: '报关发票模板', outputName: '报关发票' },
+        { key: 'customsContract', baseName: '报关合同模板', outputName: '报关合同' },
+        { key: 'taxInvoice', baseName: '税务局发票模版', outputName: '税务局发票' }
+    ];
+
+    return templateDefinitions.map((definition) => {
+        const xlsxPath = path.join(templateBaseDir, `${definition.baseName}.xlsx`);
+        const xlsPath = path.join(templateBaseDir, `${definition.baseName}.xls`);
+
+        if (fs.existsSync(xlsxPath)) {
+            const containerType = detectExcelContainerType(xlsxPath);
+            return {
+                ...definition,
+                templatePath: xlsxPath,
+                engine: containerType === 'zip' ? 'populate' : 'legacy',
+                warning:
+                    containerType === 'cfb'
+                        ? `模板“${definition.outputName}”文件后缀是 .xlsx，但实际仍是旧版 Excel 格式，已自动切换为兼容模式生成。若需更高格式保真，请用 Excel/WPS 打开后“另存为”标准 .xlsx。`
+                        : containerType === 'unknown'
+                            ? `模板“${definition.outputName}”无法识别为标准 .xlsx，已自动切换为兼容模式生成。`
+                            : ''
+            };
+        }
+
+        if (fs.existsSync(xlsPath)) {
+            return {
+                ...definition,
+                templatePath: xlsPath,
+                engine: 'legacy',
+                warning: `模板“${definition.outputName}”仍为 .xls，已使用兼容模式生成，格式保真仍可能不足。建议先将模板另存为 .xlsx。`
+            };
+        }
+
+        throw new Error(`未找到模板：${definition.baseName}.xlsx 或 ${definition.baseName}.xls`);
+    });
+}
+
+/**
+ * Generate invoices based on uploaded Excel file and templates.
+ * Uses xlsx-populate for .xlsx templates to better preserve workbook formatting.
+ * Falls back to legacy xlsx-js-style processing for .xls templates.
+ * @param {string} dataFilePath
+ * @param {string} outputDir
+ * @param {string} templateBaseDir
+ * @returns {Promise<Object>}
+ */
+export async function generateInvoices(dataFilePath, outputDir, templateBaseDir) {
+    try {
+        const entries = readDataRows(dataFilePath);
+        const templateItems = resolveTemplateItems(templateBaseDir).map((item) => ({
+            ...item,
+            outputDir
+        }));
+
+        const baseName = path.basename(dataFilePath, path.extname(dataFilePath));
+        const files = [];
+        const warnings = [];
+
+        for (const item of templateItems) {
+            if (item.engine === 'populate') {
+                try {
+                    const filePath = await savePopulateWorkbook(item, entries, baseName);
+                    files.push(filePath);
+                } catch (error) {
+                    warnings.push(
+                        `模板“${item.outputName}”按标准 .xlsx 解析失败，已自动回退兼容模式。原因: ${error.message}`
+                    );
+                    const filePath = saveLegacyWorkbook(item, entries, baseName);
+                    files.push(filePath);
+                }
+                continue;
+            }
+
+            if (item.warning) {
+                warnings.push(item.warning);
+            }
+            const filePath = saveLegacyWorkbook(item, entries, baseName);
+            files.push(filePath);
+        }
+
+        return { success: true, files, warnings };
+    } catch (error) {
+        console.error('Invoice Generation Error:', error);
+        return { success: false, error: error.message };
     }
 }

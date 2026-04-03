@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
+  openWechatCsvFiles: () => ipcRenderer.invoke('dialog:openWechatCsvFiles'),
   readExcelInfo: (path) => ipcRenderer.invoke('excel:readInfo', path),
 
   // Bank Reconciliation APIs
@@ -15,5 +16,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   expandDept: (filePath) => ipcRenderer.invoke('dept:expand', filePath),
   generateInvoice: (filePath) => ipcRenderer.invoke('invoice:generate', filePath),
   importJapanCost: (data) => ipcRenderer.invoke('japan-cost:import', data),
-  filterProfitLossSubjects: (filePath) => ipcRenderer.invoke('profit-loss-subject:filter', filePath)
+  filterProfitLossSubjects: (filePath) => ipcRenderer.invoke('profit-loss-subject:filter', filePath),
+  summarizeWechatTransactionFees: (data) => ipcRenderer.invoke('wechat-transaction:summary', data)
 });

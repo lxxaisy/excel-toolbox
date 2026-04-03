@@ -81,11 +81,16 @@ const handleGenerate = async () => {
     try {
         const result = await window.electronAPI.generateInvoice(filePath.value);
         if (result.success) {
-            const fileList = result.files.map(f => f.split(/[\\/]/).pop()).join(', ');
             ElMessage.success({
                 message: `生成成功！已保存 ${result.files.length} 个文件到目标文件夹。`,
                 duration: 5000
             });
+            if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+                ElMessage.warning({
+                    message: result.warnings.join('；'),
+                    duration: 7000
+                });
+            }
         } else {
             if (result.message === 'Cancelled folder selection') {
                 ElMessage.info('已取消文件夹选择');

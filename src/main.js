@@ -10,6 +10,7 @@ import { expandDept } from './utils/deptExpand.js';
 import { generateInvoices } from './utils/invoiceGenerator.js';
 import { importJapanCost } from './utils/japanCostImport.js';
 import { filterProfitLossSubjects } from './utils/profitLossSubjectFilter.js';
+import { summarizeWechatTransactionFees } from './utils/wechatTransactionSummary.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -69,6 +70,18 @@ ipcMain.handle('dialog:openFile', async () => {
     return null;
   } else {
     return filePaths[0];
+  }
+});
+
+ipcMain.handle('dialog:openWechatCsvFiles', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'CSV Files', extensions: ['csv'] }]
+  });
+  if (canceled) {
+    return null;
+  } else {
+    return filePaths;
   }
 });
 
@@ -264,6 +277,34 @@ ipcMain.handle('profit-loss-subject:filter', async (event, filePath) => {
     return { success: true, savePath };
   } catch (error) {
     console.error('Profit/Loss Subject Filter Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 10. Wechat Transaction Summary Handler
+ipcMain.handle('wechat-transaction:summary', async (event, { filePaths }) => {
+  try {
+    const buffer = await summarizeWechatTransactionFees(filePaths);
+    const defaultBaseName = Array.isArray(filePaths) && filePaths.length > 0
+      ? path.parse(filePaths[0]).name
+      : '汇总';
+    const suffix = Array.isArray(filePaths) && filePaths.length > 1
+      ? `_等${filePaths.length}个文件`
+      : '';
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存微信支付手续费汇总结果',
+      defaultPath: `微信支付手续费汇总_${defaultBaseName}${suffix}.xlsx`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Wechat Transaction Summary Error:', error);
     return { success: false, error: error.message };
   }
 });
