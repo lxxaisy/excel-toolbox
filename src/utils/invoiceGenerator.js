@@ -1,5 +1,6 @@
 import XLSX from 'xlsx-js-style';
 import XlsxPopulate from 'xlsx-populate';
+import AdmZip from 'adm-zip';
 import fs from 'fs';
 import path from 'path';
 
@@ -90,7 +91,7 @@ function formatDate(value) {
 function buildRulesByTemplate(entry) {
     return {
         customsInvoice: [
-            { type: 'replace', find: 'JPY2418400', replace: entry.jpyAmountO },
+            { type: 'set', addresses: ['G17', 'H17', 'H36'], value: entry.jpyAmountO },
             { type: 'append', find: '购货单位 THE BUYER:', value: entry.customer, targetColumn: 5 },
             { type: 'append', find: 'THE BUYER', value: entry.customer, targetColumn: 5 },
             { type: 'append', find: '发票号 INVOICE NO.:', value: entry.contractNo, targetColumn: 5 },
@@ -101,7 +102,7 @@ function buildRulesByTemplate(entry) {
             { type: 'append', find: 'INVOICE DATE', value: formatDate(entry.entryDate), targetColumn: 5 }
         ],
         customsContract: [
-            { type: 'replace', find: '260000', replace: entry.jpyAmountE },
+            { type: 'set', addresses: ['C18'], value: entry.jpyAmountE },
             { type: 'append', find: '甲方：', value: entry.customer },
             { type: 'append', find: '合同编号：', value: entry.contractNo },
             { type: 'append', find: '合同执行日期：', value: formatDate(entry.entryDate) }
@@ -140,7 +141,45 @@ function buildUniqueSheetName(baseName, usedNames) {
     return candidate;
 }
 
+function setPopulateCellValue(sheet, address, value) {
+    sheet.cell(address).value(value ?? '');
+}
+
+function setLegacyCellValueByAddress(sheet, address, value) {
+    const targetCell = sheet[address] || {};
+    setLegacyCellValue(targetCell, value ?? '');
+    if (!sheet[address]) {
+        sheet[address] = targetCell;
+    }
+}
+
+function applyDirectPopulateRules(sheet, rules) {
+    rules.forEach((rule) => {
+        if (rule.type !== 'set' || !Array.isArray(rule.addresses)) {
+            return;
+        }
+
+        rule.addresses.forEach((address) => {
+            setPopulateCellValue(sheet, address, rule.value);
+        });
+    });
+}
+
+function applyDirectLegacyRules(sheet, rules) {
+    rules.forEach((rule) => {
+        if (rule.type !== 'set' || !Array.isArray(rule.addresses)) {
+            return;
+        }
+
+        rule.addresses.forEach((address) => {
+            setLegacyCellValueByAddress(sheet, address, rule.value);
+        });
+    });
+}
+
 function applyRulesToPopulateSheet(sheet, rules) {
+    applyDirectPopulateRules(sheet, rules);
+
     const usedRange = sheet.usedRange();
     if (!usedRange) {
         return;
@@ -198,6 +237,8 @@ function applyRulesToPopulateSheet(sheet, rules) {
 }
 
 function applyRulesToLegacySheet(sheet, rules) {
+    applyDirectLegacyRules(sheet, rules);
+
     if (!sheet || !sheet['!ref']) {
         return;
     }
@@ -274,6 +315,53 @@ function cloneLegacySheet(sheet) {
     return JSON.parse(JSON.stringify(sheet));
 }
 
+function updateXmlTagAttributes(tag, attributes) {
+    let updatedTag = tag;
+
+    Object.entries(attributes).forEach(([name, value]) => {
+        const attrPattern = new RegExp(`${name}="[^"]*"`);
+        if (attrPattern.test(updatedTag)) {
+            updatedTag = updatedTag.replace(attrPattern, `${name}="${value}"`);
+            return;
+        }
+
+        updatedTag = updatedTag.replace(/\/?>$/, (ending) => ` ${name}="${value}"${ending}`);
+    });
+
+    return updatedTag;
+}
+
+function markWorkbookForRecalculation(outputPath) {
+    const zip = new AdmZip(outputPath);
+    const workbookEntry = zip.getEntry('xl/workbook.xml');
+    if (!workbookEntry) {
+        return;
+    }
+
+    let workbookXml = workbookEntry.getData().toString('utf8');
+    const calcAttributes = {
+        calcMode: 'auto',
+        calcOnSave: 'true',
+        calcCompleted: 'false',
+        fullCalcOnLoad: 'true',
+        forceFullCalc: 'true'
+    };
+
+    if (/<calcPr\b[^>]*\/>/.test(workbookXml)) {
+        workbookXml = workbookXml.replace(/<calcPr\b[^>]*\/>/, (tag) => updateXmlTagAttributes(tag, calcAttributes));
+    } else if (/<calcPr\b[^>]*>/.test(workbookXml)) {
+        workbookXml = workbookXml.replace(/<calcPr\b[^>]*>/, (tag) => updateXmlTagAttributes(tag, calcAttributes));
+    } else {
+        workbookXml = workbookXml.replace(
+            /<\/workbook>/,
+            '<calcPr calcMode="auto" calcOnSave="true" calcCompleted="false" fullCalcOnLoad="true" forceFullCalc="true"/></workbook>'
+        );
+    }
+
+    zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+    zip.writeZip(outputPath);
+}
+
 async function savePopulateWorkbook(item, entries, baseName) {
     const workbook = await XlsxPopulate.fromFileAsync(item.templatePath);
     const templateSheet = workbook.sheet(0);
@@ -300,6 +388,7 @@ async function savePopulateWorkbook(item, entries, baseName) {
 
     const outputPath = path.join(item.outputDir, `${item.outputName}_${baseName}.xlsx`);
     await workbook.toFileAsync(outputPath);
+    markWorkbookForRecalculation(outputPath);
     return outputPath;
 }
 
@@ -320,6 +409,7 @@ function saveLegacyWorkbook(item, entries, baseName) {
     const outputPath = path.join(item.outputDir, `${item.outputName}_${baseName}.xlsx`);
     const outBuffer = XLSX.write(outputWorkbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
     fs.writeFileSync(outputPath, outBuffer);
+    markWorkbookForRecalculation(outputPath);
     return outputPath;
 }
 
