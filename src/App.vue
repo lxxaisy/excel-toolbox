@@ -22,7 +22,7 @@
           <span class="icon">⚖️</span>
           集团银行余额对账
         </div>
-        <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
+        <!-- <div class="nav-item" :class="{ active: currentTab === 'voucher-reconcile' }"
           @click="currentTab = 'voucher-reconcile'">
           <span class="icon">📋</span>
           EDS部门成本导入
@@ -51,6 +51,11 @@
           <span class="icon">💸</span>
           微信支付手续费汇总
         </div>
+        <div class="nav-item" :class="{ active: currentTab === 'cashflow-analysis' }"
+          @click="currentTab = 'cashflow-analysis'">
+          <span class="icon">📈</span>
+          现金流量分析
+        </div> -->
         <div class="nav-item disabled">
           <span class="icon">🚧</span>
           更多功能开发中...
@@ -74,6 +79,7 @@
         <JapanCostImport v-if="currentTab === 'japan-cost-import'" />
         <ProfitLossSubjectFilter v-if="currentTab === 'profit-loss-subject-filter'" />
         <WechatTransactionSummary v-if="currentTab === 'wechat-transaction-summary'" />
+        <CashflowAnalysis v-if="currentTab === 'cashflow-analysis'" />
       </section>
 
       <!-- Console / Log Panel -->
@@ -102,6 +108,7 @@ import InvoiceGenerator from './components/InvoiceGenerator.vue';
 import JapanCostImport from './components/JapanCostImport.vue';
 import ProfitLossSubjectFilter from './components/ProfitLossSubjectFilter.vue';
 import WechatTransactionSummary from './components/WechatTransactionSummary.vue';
+import CashflowAnalysis from './components/CashflowAnalysis.vue';
 
 const currentTab = ref('bank-reconcile-fuzzy');
 const logs = ref([{ time: new Date().toLocaleTimeString(), message: '[System] 准备就绪 (Vue 3)', type: 'info' }]);
@@ -117,6 +124,7 @@ const currentTitle = computed(() => {
   if (currentTab.value === 'japan-cost-import') return '日本成本数据导入';
   if (currentTab.value === 'profit-loss-subject-filter') return '用友损益结转-科目筛选';
   if (currentTab.value === 'wechat-transaction-summary') return '微信支付手续费按日期汇总';
+  if (currentTab.value === 'cashflow-analysis') return '现金流量分析';
   return '未命名功能';
 });
 

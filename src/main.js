@@ -11,6 +11,7 @@ import { generateInvoices } from './utils/invoiceGenerator.js';
 import { importJapanCost } from './utils/japanCostImport.js';
 import { filterProfitLossSubjects } from './utils/profitLossSubjectFilter.js';
 import { summarizeWechatTransactionFees } from './utils/wechatTransactionSummary.js';
+import { buildCashflowAnalysisExportHtml, buildCashflowAnalysisPayload } from './utils/cashflowAnalysis.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -83,6 +84,14 @@ ipcMain.handle('dialog:openWechatCsvFiles', async () => {
   } else {
     return filePaths;
   }
+});
+
+ipcMain.handle('dialog:openCashflowFile', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }]
+  });
+  return canceled ? null : filePaths[0];
 });
 
 // 2. Excel Logic Handler (Example: Read Info)
@@ -305,6 +314,38 @@ ipcMain.handle('wechat-transaction:summary', async (event, { filePaths }) => {
     return { success: true, savePath };
   } catch (error) {
     console.error('Wechat Transaction Summary Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cashflow-analysis:parse', async (event, filePath) => {
+  try {
+    const payload = buildCashflowAnalysisPayload(filePath);
+    return { success: true, ...payload };
+  } catch (error) {
+    console.error('Cashflow Analysis Parse Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cashflow-analysis:export-html', async (event, { analysis, config, sourceFilePath }) => {
+  try {
+    const baseName = sourceFilePath ? path.parse(sourceFilePath).name : '现金流量分析';
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '导出现金流量分析 HTML',
+      defaultPath: `${baseName}_现金流量分析.html`,
+      filters: [{ name: 'HTML File', extensions: ['html'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    const html = buildCashflowAnalysisExportHtml(analysis);
+    fs.writeFileSync(savePath, html, 'utf8');
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Cashflow Analysis Export Error:', error);
     return { success: false, error: error.message };
   }
 });

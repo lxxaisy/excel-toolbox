@@ -208,9 +208,23 @@ export async function reconcileBalance(configPath, bankFilesPath, cutoffDate) {
 
                     // 日期处理
                     if (typeof dateVal === 'number') {
-                        const dateObj = XLSX.SSF.parse_date_code(dateVal);
-                        dateStr = `${dateObj.y}-${String(dateObj.m).padStart(2, '0')}-${String(dateObj.d).padStart(2, '0')}`;
-                    } else if (rawStr) {
+                        try {
+                            const dateObj = XLSX.SSF.parse_date_code(dateVal);
+                            if (dateObj) {
+                                dateStr = `${dateObj.y}-${String(dateObj.m).padStart(2, '0')}-${String(dateObj.d).padStart(2, '0')}`;
+                            }
+                        } catch (error) {
+                            const excelRowNumber = i + 1;
+                            const excelDateCol = XLSX.utils.encode_col(dateColIdx);
+                            const excelBalCol = XLSX.utils.encode_col(balColIdx);
+                            const balanceRaw = row[balColIdx];
+                            throw new Error(
+                                `银行对账单日期解析失败：文件=${matchedFileName}，Sheet=${sheetName}，规则账簿=${bookName}，账号=${accountCode}，Excel行=${excelRowNumber}，日期单元格=${excelDateCol}${excelRowNumber}，余额单元格=${excelBalCol}${excelRowNumber}，原始日期值=${String(dateVal)}，原始余额值=${String(balanceRaw ?? '')}，日期列规则=${String(rule[8] ?? '')}。原始错误: ${error.message}`
+                            );
+                        }
+                    }
+
+                    if (!dateStr && rawStr) {
                         let str = rawStr;
 
                         // Case 5: 20260106 13:55:16 -> Extract 20260106 first
