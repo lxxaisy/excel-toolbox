@@ -3,6 +3,36 @@ import AdmZip from 'adm-zip';
 import path from 'path';
 import fs from 'fs';
 
+function parseNumericDateParts(value) {
+  const dateObj = XLSX.SSF.parse_date_code(value);
+  if (dateObj) {
+    return { m: dateObj.m, d: dateObj.d };
+  }
+
+  const raw = String(Math.trunc(value));
+  if (/^\d{8}$/.test(raw)) {
+    const year = Number(raw.substring(0, 4));
+    const month = Number(raw.substring(4, 6));
+    const day = Number(raw.substring(6, 8));
+    const candidate = new Date(year, month - 1, day);
+    const isValidCalendarDate =
+      candidate.getFullYear() === year &&
+      candidate.getMonth() + 1 === month &&
+      candidate.getDate() === day;
+
+    if (!isValidCalendarDate) {
+      return null;
+    }
+
+    return {
+      m: raw.substring(4, 6),
+      d: raw.substring(6, 8)
+    };
+  }
+
+  return null;
+}
+
 /**
  * 集团银行明细对账核心逻辑
  * 对应VBA文件：集团银行明细对账（按月模糊匹配，如有汇兑损益，先要删除）.md
@@ -215,8 +245,10 @@ export async function reconcile(configPath, bankFilesPath, targetMonth, matchTyp
       let m;
       // 日期格式化处理
       if (typeof dateVal === 'number') {
-        const dateObj = XLSX.SSF.parse_date_code(dateVal);
-        m = dateObj.m;
+        const dateParts = parseNumericDateParts(dateVal);
+        if (dateParts) {
+          m = dateParts.m;
+        }
       } else {
         let str = String(dateVal).trim();
 
@@ -316,8 +348,10 @@ export async function reconcile(configPath, bankFilesPath, targetMonth, matchTyp
       let dayStr = "";
       if (matchType === 'exact') {
         if (typeof dateVal === 'number') {
-          const dateObj = XLSX.SSF.parse_date_code(dateVal);
-          dayStr = String(dateObj.d).padStart(2, '0');
+          const dateParts = parseNumericDateParts(dateVal);
+          if (dateParts) {
+            dayStr = String(dateParts.d).padStart(2, '0');
+          }
         } else {
           const str = String(dateVal);
           if (str.includes('-')) {
@@ -482,9 +516,11 @@ export async function reconcile(configPath, bankFilesPath, targetMonth, matchTyp
       if (val == null || val === '') return '';
       let m, d;
       if (typeof val === 'number') {
-        const dateObj = XLSX.SSF.parse_date_code(val);
-        m = dateObj.m;
-        d = dateObj.d;
+        const dateParts = parseNumericDateParts(val);
+        if (dateParts) {
+          m = dateParts.m;
+          d = dateParts.d;
+        }
       } else {
         let str = String(val).trim();
 
