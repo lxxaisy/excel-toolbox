@@ -7,18 +7,27 @@
         <span>Toolbox</span>
       </div>
       <nav class="nav-menu">
-        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-fuzzy' }"
-          @click="currentTab = 'bank-reconcile-fuzzy'">
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'bank-reconcile-fuzzy' }"
+          @click="currentTab = 'bank-reconcile-fuzzy'"
+        >
           <span class="icon">💰</span>
           集团银行明细对账 (按月模糊)
         </div>
-        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-exact' }"
-          @click="currentTab = 'bank-reconcile-exact'">
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'bank-reconcile-exact' }"
+          @click="currentTab = 'bank-reconcile-exact'"
+        >
           <span class="icon">🎯</span>
           集团银行明细对账 (精确匹配)
         </div>
-        <div class="nav-item" :class="{ active: currentTab === 'bank-reconcile-balance' }"
-          @click="currentTab = 'bank-reconcile-balance'">
+        <div
+          class="nav-item"
+          :class="{ active: currentTab === 'bank-reconcile-balance' }"
+          @click="currentTab = 'bank-reconcile-balance'"
+        >
           <span class="icon">⚖️</span>
           集团银行余额对账
         </div>
@@ -70,15 +79,28 @@
       </header>
 
       <section class="content-body">
-        <BankReconciliation v-if="currentTab.startsWith('bank-reconcile') && currentTab !== 'bank-reconcile-balance'"
-          :matchType="currentTab === 'bank-reconcile-exact' ? 'exact' : 'fuzzy'" :onLog="addLog" />
-        <BankBalanceReconciliation v-if="currentTab === 'bank-reconcile-balance'" :onLog="addLog" />
+        <BankReconciliation
+          v-if="
+            currentTab.startsWith('bank-reconcile') &&
+            currentTab !== 'bank-reconcile-balance'
+          "
+          :matchType="currentTab === 'bank-reconcile-exact' ? 'exact' : 'fuzzy'"
+          :onLog="addLog"
+        />
+        <BankBalanceReconciliation
+          v-if="currentTab === 'bank-reconcile-balance'"
+          :onLog="addLog"
+        />
         <VoucherReconciliation v-if="currentTab === 'voucher-reconcile'" />
         <DeptExpand v-if="currentTab === 'dept-expand'" />
         <InvoiceGenerator v-if="currentTab === 'invoice-generator'" />
         <JapanCostImport v-if="currentTab === 'japan-cost-import'" />
-        <ProfitLossSubjectFilter v-if="currentTab === 'profit-loss-subject-filter'" />
-        <WechatTransactionSummary v-if="currentTab === 'wechat-transaction-summary'" />
+        <ProfitLossSubjectFilter
+          v-if="currentTab === 'profit-loss-subject-filter'"
+        />
+        <WechatTransactionSummary
+          v-if="currentTab === 'wechat-transaction-summary'"
+        />
         <CashflowAnalysis v-if="currentTab === 'cashflow-analysis'" />
       </section>
 
@@ -99,40 +121,50 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue';
-import BankReconciliation from './components/BankReconciliation.vue';
-import BankBalanceReconciliation from './components/BankBalanceReconciliation.vue';
-import VoucherReconciliation from './components/VoucherReconciliation.vue';
-import DeptExpand from './components/DeptExpand.vue';
-import InvoiceGenerator from './components/InvoiceGenerator.vue';
-import JapanCostImport from './components/JapanCostImport.vue';
-import ProfitLossSubjectFilter from './components/ProfitLossSubjectFilter.vue';
-import WechatTransactionSummary from './components/WechatTransactionSummary.vue';
-import CashflowAnalysis from './components/CashflowAnalysis.vue';
+import { ref, computed, nextTick, watch } from "vue";
+import BankReconciliation from "./components/BankReconciliation.vue";
+import BankBalanceReconciliation from "./components/BankBalanceReconciliation.vue";
+import VoucherReconciliation from "./components/VoucherReconciliation.vue";
+import DeptExpand from "./components/DeptExpand.vue";
+import InvoiceGenerator from "./components/InvoiceGenerator.vue";
+import JapanCostImport from "./components/JapanCostImport.vue";
+import ProfitLossSubjectFilter from "./components/ProfitLossSubjectFilter.vue";
+import WechatTransactionSummary from "./components/WechatTransactionSummary.vue";
+import CashflowAnalysis from "./components/CashflowAnalysis.vue";
 
-const currentTab = ref('bank-reconcile-fuzzy');
-const logs = ref([{ time: new Date().toLocaleTimeString(), message: '[System] 准备就绪 (Vue 3)', type: 'info' }]);
+const currentTab = ref("bank-reconcile-fuzzy");
+const logs = ref([
+  {
+    time: new Date().toLocaleTimeString(),
+    message: "[System] 准备就绪 (Vue 3)",
+    type: "info",
+  },
+]);
 const consoleOutput = ref(null);
 
 const currentTitle = computed(() => {
-  if (currentTab.value === 'bank-reconcile-fuzzy') return '集团银行明细对账 (按月模糊)';
-  if (currentTab.value === 'bank-reconcile-exact') return '集团银行明细对账 (精确匹配)';
-  if (currentTab.value === 'bank-reconcile-balance') return '集团银行余额对账';
-  if (currentTab.value === 'voucher-reconcile') return '凭证制表人匹配';
-  if (currentTab.value === 'dept-expand') return '部门批量新增';
-  if (currentTab.value === 'invoice-generator') return '发票/合同批量生成';
-  if (currentTab.value === 'japan-cost-import') return '日本成本数据导入';
-  if (currentTab.value === 'profit-loss-subject-filter') return '用友损益结转-科目筛选';
-  if (currentTab.value === 'wechat-transaction-summary') return '微信支付手续费按日期汇总';
-  if (currentTab.value === 'cashflow-analysis') return '现金流量分析';
-  return '未命名功能';
+  if (currentTab.value === "bank-reconcile-fuzzy")
+    return "集团银行明细对账 (按月模糊)";
+  if (currentTab.value === "bank-reconcile-exact")
+    return "集团银行明细对账 (精确匹配)";
+  if (currentTab.value === "bank-reconcile-balance") return "集团银行余额对账";
+  if (currentTab.value === "voucher-reconcile") return "凭证制表人匹配";
+  if (currentTab.value === "dept-expand") return "部门批量新增";
+  if (currentTab.value === "invoice-generator") return "发票/合同批量生成";
+  if (currentTab.value === "japan-cost-import") return "日本成本数据导入";
+  if (currentTab.value === "profit-loss-subject-filter")
+    return "用友损益结转-科目筛选";
+  if (currentTab.value === "wechat-transaction-summary")
+    return "微信支付手续费按日期汇总";
+  if (currentTab.value === "cashflow-analysis") return "现金流量分析";
+  return "未命名功能";
 });
 
-const addLog = (message, type = 'info') => {
+const addLog = (message, type = "info") => {
   logs.value.push({
     time: new Date().toLocaleTimeString(),
     message,
-    type
+    type,
   });
 };
 
@@ -189,7 +221,15 @@ watch(logs.value, async () => {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
   height: 100vh;
   overflow: hidden;
   color: var(--text-main);
@@ -323,7 +363,9 @@ body {
 .card {
   background: var(--bg-card);
   border-radius: 12px;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  box-shadow:
+    0 1px 3px 0 rgb(0 0 0 / 0.1),
+    0 1px 2px -1px rgb(0 0 0 / 0.1);
   border: 1px solid var(--border);
   margin-bottom: 24px;
   max-width: 900px;
@@ -371,7 +413,9 @@ input[type="text"] {
   font-size: 14px;
   outline: none;
   background-color: #fff;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
   color: var(--text-main);
 }
 
@@ -479,7 +523,7 @@ input[type="text"]:focus {
   flex: 1;
   padding: 12px 16px;
   overflow-y: auto;
-  font-family: 'JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-family: "JetBrains Mono", "Menlo", "Monaco", "Courier New", monospace;
   font-size: 12px;
   line-height: 1.6;
 }
