@@ -20,5 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   summarizeWechatTransactionFees: (data) => ipcRenderer.invoke('wechat-transaction:summary', data),
   openCashflowFile: () => ipcRenderer.invoke('dialog:openCashflowFile'),
   parseCashflowAnalysis: (filePath) => ipcRenderer.invoke('cashflow-analysis:parse', filePath),
-  exportCashflowAnalysisHtml: (data) => ipcRenderer.invoke('cashflow-analysis:export-html', data)
+  exportCashflowAnalysisHtml: (data) => ipcRenderer.invoke('cashflow-analysis:export-html', data),
+  openRollingBudgetFolder: () => ipcRenderer.invoke('dialog:openRollingBudgetFolder'),
+  openRollingBudgetFile: () => ipcRenderer.invoke('dialog:openRollingBudgetFile'),
+  generateRollingBudget: (data) => ipcRenderer.invoke('rolling-budget:generate', data)
 });

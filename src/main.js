@@ -12,6 +12,7 @@ import { importJapanCost } from './utils/japanCostImport.js';
 import { filterProfitLossSubjects } from './utils/profitLossSubjectFilter.js';
 import { summarizeWechatTransactionFees } from './utils/wechatTransactionSummary.js';
 import { buildCashflowAnalysisExportHtml, buildCashflowAnalysisPayload } from './utils/cashflowAnalysis.js';
+import { discoverRollingBudgetSourceFiles, generateRollingBudget } from './utils/rollingBudgetGenerator.js';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -88,6 +89,23 @@ ipcMain.handle('dialog:openWechatCsvFiles', async () => {
 
 ipcMain.handle('dialog:openCashflowFile', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }]
+  });
+  return canceled ? null : filePaths[0];
+});
+
+ipcMain.handle('dialog:openRollingBudgetFolder', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: '选择资金滚动预算资料文件夹',
+    properties: ['openDirectory']
+  });
+  return canceled ? null : filePaths[0];
+});
+
+ipcMain.handle('dialog:openRollingBudgetFile', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: '选择资金滚动预算资料文件',
     properties: ['openFile'],
     filters: [{ name: 'Excel Files', extensions: ['xlsx', 'xls'] }]
   });
@@ -346,6 +364,50 @@ ipcMain.handle('cashflow-analysis:export-html', async (event, { analysis, config
     return { success: true, savePath };
   } catch (error) {
     console.error('Cashflow Analysis Export Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('rolling-budget:generate', async (event, {
+  updatePeriod,
+  sourceMode,
+  folderPath,
+  sourcePaths
+} = {}) => {
+  try {
+    let resolvedSourcePaths;
+    if (sourceMode === 'folder') {
+      if (!folderPath) {
+        throw new Error('请选择资料文件夹');
+      }
+      resolvedSourcePaths = await discoverRollingBudgetSourceFiles(folderPath);
+    } else if (sourceMode === 'manual') {
+      resolvedSourcePaths = sourcePaths || {};
+    } else {
+      throw new Error('请选择资料来源');
+    }
+
+    const templatePath = path.join(getTemplateBaseDir(), '资金滚动预算模板.xlsx');
+    const buffer = await generateRollingBudget({
+      updatePeriod,
+      ...resolvedSourcePaths,
+      templatePath
+    });
+
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存资金滚动预算',
+      defaultPath: `2026年资金滚动预算_${updatePeriod}.xlsx`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Rolling Budget Generate Error:', error);
     return { success: false, error: error.message };
   }
 });
