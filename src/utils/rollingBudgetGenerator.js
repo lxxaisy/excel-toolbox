@@ -104,6 +104,8 @@ const DOMESTIC_ROLLING_SECTION = '集团国内部分';
 const MONTH_END_CASH_BALANCE_LABEL = '月末资金余额';
 const POST_INVESTMENT_CASH_LABEL = '扣投资后流动+非流动';
 const CASH_BALANCE_CHECK_ROW = 41;
+const SOURCE_NOTE_START_ROW = 45;
+const SOURCE_NOTE_END_ROW = 49;
 const BALANCE_OPENING_COLUMN = 5;
 const BALANCE_CLOSING_COLUMN = 11;
 const BALANCE_UNIT_DIVISOR = 10000;
@@ -772,6 +774,20 @@ function replaceCellXml(sheetXml, address, value, valueType, styleReferenceAddre
   return sheetXml.replace(row, row.replace(/<\/row>$/, `${nextCell}</row>`));
 }
 
+function removeBudgetSourceNoteRows(sheetXml) {
+  for (let rowNumber = SOURCE_NOTE_START_ROW; rowNumber <= SOURCE_NOTE_END_ROW; rowNumber += 1) {
+    const row = getXmlRowNode(sheetXml, rowNumber);
+    if (row) {
+      sheetXml = sheetXml.replace(row, '');
+    }
+  }
+
+  return sheetXml.replace(
+    /<dimension\b[^>]*\bref="[^"]*"[^>]*\/>/,
+    (dimension) => setXmlAttribute(dimension, 'ref', 'A1:Q41')
+  );
+}
+
 function buildDetailSheetXml(sheetXml, details, updatePeriod, fallbackSheetXml) {
   const sheetData = sheetXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
   const headerRow = sheetData && getXmlRowNode(sheetData, 1);
@@ -1298,6 +1314,7 @@ function buildBudgetWorkbookOutput(budgetWorkbookPath, templatePath, budgetChang
   budgetChanges.sourceNotes.forEach((value, address) => {
     budgetXml = replaceCellXml(budgetXml, address, value, 'string');
   });
+  budgetXml = removeBudgetSourceNoteRows(budgetXml);
   zip.updateFile(parts.budget.worksheetEntry, Buffer.from(budgetXml, 'utf8'));
 
   const detailResult = buildDetailSheetXml(

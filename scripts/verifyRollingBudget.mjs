@@ -289,6 +289,24 @@ function assertStyledBlankDetailRow(filePath) {
   assert.match(detailXml, /<autoFilter ref="A1:H1"\/>/);
 }
 
+function assertBudgetSourceNotesRemoved(filePath) {
+  const sheet = readBudgetSheet(filePath);
+  for (let rowNumber = 45; rowNumber <= 49; rowNumber += 1) {
+    assert.equal(sheet[`B${rowNumber}`], undefined, `预算表不得保留 B${rowNumber} 资料说明`);
+  }
+
+  const zip = new AdmZip(filePath);
+  const budgetXml = zip.readAsText(getSheetPart(zip, '2026年资金滚动预算'));
+  for (let rowNumber = 45; rowNumber <= 49; rowNumber += 1) {
+    assert.doesNotMatch(
+      budgetXml,
+      new RegExp(`<row\\b(?=[^>]*\\br="${rowNumber}")[^>]*>`),
+      `预算表不得保留第 ${rowNumber} 行资料说明`
+    );
+  }
+  assert.match(budgetXml, /<dimension ref="A1:Q41"\/>/, '预算表有效范围应在资料说明删除后截止第 41 行');
+}
+
 function snapshotCells(sheet, column) {
   return Array.from({ length: 49 }, (_, index) => {
     const cell = sheet[`${column}${index + 1}`];
@@ -360,6 +378,7 @@ assert.ok(
 });
 
 const juneBudget = readBudgetSheet(junePath);
+assertBudgetSourceNotesRemoved(junePath);
 assert.equal(juneBudget.H4.v, 1234.5678, '可转债期初余额必须从元换算为万元');
 assert.equal(juneBudget.H5.v, 3456.789, '定增期初余额必须从元换算为万元');
 assert.equal(juneBudget.H26.v, 2345.6789, '可转债期末余额必须从元换算为万元');
@@ -387,6 +406,7 @@ fs.writeFileSync(julyPath, await generateRollingBudget({
 const julyWorkbook = XLSX.readFile(julyPath, { cellFormula: true, cellStyles: true });
 assert.deepEqual(julyWorkbook.SheetNames, ['2026年资金滚动预算', '生成后 外采账务明细']);
 const julyBudget = julyWorkbook.Sheets['2026年资金滚动预算'];
+assertBudgetSourceNotesRemoved(julyPath);
 ['C', 'D', 'E', 'F', 'G'].forEach((column) => {
   assert.deepEqual(snapshotCells(julyBudget, column), historicalSnapshot[column], `${column} 列历史数据不得被修改`);
 });
