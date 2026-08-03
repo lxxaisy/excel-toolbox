@@ -10,6 +10,7 @@ const XLSX = XLSXModule?.default ?? XLSXModule;
 const workspaceRoot = path.resolve(import.meta.dirname, '..');
 const templatePath = path.join(workspaceRoot, 'vba', '资金滚动预算模板.xlsx');
 const verifyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'rolling-budget-verify-'));
+const LEGACY_DETAIL_SHEET = '外采账务明细';
 
 const rollingLabels = [
   '销售回笼',
@@ -228,6 +229,23 @@ function removeCalculationProperties(sourcePath) {
   return outputPath;
 }
 
+function clearDetailHistory(zip, sheetName) {
+  const detailPart = getSheetPart(zip, sheetName);
+  let detailXml = zip.readAsText(detailPart);
+  const sheetData = detailXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
+  const headerRow = sheetData && sheetData.match(/<row\b(?=[^>]*\br="1")[^>]*>[\s\S]*?<\/row>/)?.[0];
+  assert.ok(sheetData && headerRow, '测试原表必须包含外采明细表头');
+
+  detailXml = detailXml.replace(sheetData, `<sheetData>${headerRow}</sheetData>`);
+  detailXml = detailXml.replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:H1"/>');
+  if (/<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/.test(detailXml)) {
+    detailXml = detailXml.replace(/<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/, '<autoFilter ref="A1:H1"/>');
+  } else if (/<autoFilter\b[^>]*\/>/.test(detailXml)) {
+    detailXml = detailXml.replace(/<autoFilter\b[^>]*\/>/, '<autoFilter ref="A1:H1"/>');
+  }
+  zip.updateFile(detailPart, Buffer.from(detailXml, 'utf8'));
+}
+
 function createCustomNamedBaseWorkbook() {
   const outputPath = path.join(verifyDirectory, 'budget-with-custom-names.xlsx');
   const zip = new AdmZip(templatePath);
@@ -253,12 +271,39 @@ function createCustomNamedBaseWorkbook() {
     return `${activeView}<workbookView windowWidth="12000" windowHeight="7000" firstSheet="3" activeTab="4"/>`;
   });
   zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+  clearDetailHistory(zip, '生成后 外采账务明细');
+  fs.writeFileSync(outputPath, zip.toBuffer());
+  return outputPath;
+}
+
+function createLegacyDetailBaseWorkbook() {
+  const outputPath = path.join(verifyDirectory, 'budget-with-may-external-details.xlsx');
+  const zip = new AdmZip(templatePath);
+  let workbookXml = zip.readAsText('xl/workbook.xml');
+  workbookXml = workbookXml
+    .replace('name="生成后 外采账务明细"', `name="${LEGACY_DETAIL_SHEET}"`)
+    .replaceAll("'生成后 外采账务明细'", `'${LEGACY_DETAIL_SHEET}'`);
+  zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+
+  const detailPart = getSheetPart(zip, LEGACY_DETAIL_SHEET);
+  let detailXml = zip.readAsText(detailPart);
+  detailXml = detailXml.replaceAll('<v>46174</v>', '<v>46143</v>');
+  zip.updateFile(detailPart, Buffer.from(detailXml, 'utf8'));
+
   fs.writeFileSync(outputPath, zip.toBuffer());
   return outputPath;
 }
 
 function getWorkbookXml(filePath) {
   return new AdmZip(filePath).readAsText('xl/workbook.xml');
+}
+
+function getWorksheetDataRows(filePath, sheetName) {
+  const zip = new AdmZip(filePath);
+  const sheetXml = zip.readAsText(getSheetPart(zip, sheetName));
+  const sheetData = sheetXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
+  assert.ok(sheetData, `${sheetName}必须包含工作表数据`);
+  return Array.from(sheetData.matchAll(/<row\b[^>]*(?:\/>|>[\s\S]*?<\/row>)/g)).map(([row]) => row);
 }
 
 function getDefinedNameNodes(workbookXml, name) {
@@ -336,6 +381,108 @@ const noJuneMonthEndBalanceSources = {
   rollingMeasurementPath: createRollingSourceWithoutJuneMonthEndBalance(sources.rollingMeasurementPath)
 };
 const customNamedBasePath = createCustomNamedBaseWorkbook();
+const legacyDetailBasePath = createLegacyDetailBaseWorkbook();
+const legacyHistoryRows = getWorksheetDataRows(legacyDetailBasePath, LEGACY_DETAIL_SHEET).slice(1);
+
+const sameMonthDetailPath = path.join(verifyDirectory, 'budget-june-replace-existing-june-details.xlsx');
+fs.writeFileSync(sameMonthDetailPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: templatePath,
+  templatePath,
+  ...sources
+}));
+const sameMonthDetailWorkbook = XLSX.readFile(sameMonthDetailPath, { cellFormula: true, cellStyles: true });
+const sameMonthDetailSheet = sameMonthDetailWorkbook.Sheets['生成后 外采账务明细'];
+assert.equal(sameMonthDetailSheet.B2.v, '测试流量公司', '重跑当月时必须写入本次外采明细');
+assert.equal(sameMonthDetailSheet.A3, undefined, '重跑当月时不得保留或重复模板中的当月示例明细');
+const sameMonthDetailZip = new AdmZip(sameMonthDetailPath);
+assert.match(
+  sameMonthDetailZip.readAsText(getSheetPart(sameMonthDetailZip, '生成后 外采账务明细')),
+  /<autoFilter ref="A1:H2"\/>/
+);
+
+const legacyJunePath = path.join(verifyDirectory, 'budget-june-appended-to-may-details.xlsx');
+fs.writeFileSync(legacyJunePath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: legacyDetailBasePath,
+  templatePath,
+  ...sources
+}));
+const legacyJuneWorkbook = XLSX.readFile(legacyJunePath, { cellFormula: true, cellStyles: true });
+assert.deepEqual(
+  legacyJuneWorkbook.SheetNames,
+  ['2026年资金滚动预算', LEGACY_DETAIL_SHEET],
+  '原表的外采账务明细标签必须保留'
+);
+const legacyJuneDetail = legacyJuneWorkbook.Sheets[LEGACY_DETAIL_SHEET];
+assert.equal(legacyJuneDetail.A2.v, 46143, '5 月历史明细期间必须保留');
+assert.equal(legacyJuneDetail.B2.v, 'A', '5 月历史明细必须保留');
+assert.equal(legacyJuneDetail.A10.v, 46174, '6 月明细必须紧接 5 月历史明细追加');
+assert.equal(legacyJuneDetail.B10.v, '测试流量公司', '6 月明细必须使用现有字段生成规则');
+assert.deepEqual(
+  getWorksheetDataRows(legacyJunePath, LEGACY_DETAIL_SHEET).slice(1, 9),
+  legacyHistoryRows,
+  '5 月历史外采明细的原始数据、格式和行位置不得被修改'
+);
+const legacyJuneWorkbookXml = getWorkbookXml(legacyJunePath);
+assert.ok(
+  getDefinedNameNodes(legacyJuneWorkbookXml, '_xlnm._FilterDatabase').some((node) => (
+    /\blocalSheetId="1"/.test(node) && node.includes(`'${LEGACY_DETAIL_SHEET}'!$A$1:$H$10`)
+  )),
+  '外采明细筛选命名区域必须指向追加后的原表标签与范围'
+);
+const legacyJuneZip = new AdmZip(legacyJunePath);
+const legacyJuneDetailXml = legacyJuneZip.readAsText(getSheetPart(legacyJuneZip, LEGACY_DETAIL_SHEET));
+assert.match(legacyJuneDetailXml, /<autoFilter ref="A1:H10"\/>/);
+assert.match(
+  legacyJuneZip.readAsText('docProps/app.xml'),
+  /<vt:lpstr>外采账务明细<\/vt:lpstr>/,
+  '工作簿元数据必须保留原表的外采明细标签'
+);
+
+const legacyJuneWithoutDetailsPath = path.join(verifyDirectory, 'budget-june-keep-may-without-details.xlsx');
+fs.writeFileSync(legacyJuneWithoutDetailsPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: legacyDetailBasePath,
+  templatePath,
+  ...noJuneExternalPurchaseSources
+}));
+const legacyJuneWithoutDetailsWorkbook = XLSX.readFile(legacyJuneWithoutDetailsPath, {
+  cellFormula: true,
+  cellStyles: true
+});
+const legacyJuneWithoutDetailsSheet = legacyJuneWithoutDetailsWorkbook.Sheets[LEGACY_DETAIL_SHEET];
+assert.equal(legacyJuneWithoutDetailsSheet.A2.v, 46143, '当月无外采明细时必须保留 5 月历史期间');
+assert.equal(legacyJuneWithoutDetailsSheet.B9.v, 'C', '当月无外采明细时必须保留全部 5 月历史记录');
+assert.equal(legacyJuneWithoutDetailsSheet.A10, undefined, '当月无外采明细时不得追加空白历史后的新行');
+const legacyJuneWithoutDetailsZip = new AdmZip(legacyJuneWithoutDetailsPath);
+const legacyJuneWithoutDetailsXml = legacyJuneWithoutDetailsZip.readAsText(
+  getSheetPart(legacyJuneWithoutDetailsZip, LEGACY_DETAIL_SHEET)
+);
+assert.match(legacyJuneWithoutDetailsXml, /<autoFilter ref="A1:H9"\/>/);
+
+const legacyJulyPath = path.join(verifyDirectory, 'budget-july-appended-to-june-details.xlsx');
+fs.writeFileSync(legacyJulyPath, await generateRollingBudget({
+  updatePeriod: '2026-07',
+  budgetWorkbookPath: legacyJunePath,
+  templatePath,
+  ...sources
+}));
+const legacyJulyWorkbook = XLSX.readFile(legacyJulyPath, { cellFormula: true, cellStyles: true });
+assert.deepEqual(
+  legacyJulyWorkbook.SheetNames,
+  ['2026年资金滚动预算', LEGACY_DETAIL_SHEET],
+  '连续生成时必须持续保留原表的外采明细标签'
+);
+const legacyJulyDetail = legacyJulyWorkbook.Sheets[LEGACY_DETAIL_SHEET];
+assert.equal(legacyJulyDetail.B2.v, 'A', '7 月生成不得修改 5 月历史明细');
+assert.equal(legacyJulyDetail.B10.v, '测试流量公司', '7 月生成不得修改已追加的 6 月明细');
+assert.equal(legacyJulyDetail.B11.v, '测试软件公司', '7 月明细必须继续追加在 6 月明细之后');
+const legacyJulyZip = new AdmZip(legacyJulyPath);
+assert.match(
+  legacyJulyZip.readAsText(getSheetPart(legacyJulyZip, LEGACY_DETAIL_SHEET)),
+  /<autoFilter ref="A1:H11"\/>/
+);
 
 const junePath = path.join(verifyDirectory, 'budget-june.xlsx');
 fs.writeFileSync(junePath, await generateRollingBudget({
@@ -426,13 +573,16 @@ const julyZip = new AdmZip(julyPath);
 const budgetXml = julyZip.readAsText(getSheetPart(julyZip, '2026年资金滚动预算'));
 const workbookXml = julyZip.readAsText('xl/workbook.xml');
 const detailPart = julyZip.readAsText(getSheetPart(julyZip, '生成后 外采账务明细'));
+const julyDetail = julyWorkbook.Sheets['生成后 外采账务明细'];
 assert.match(budgetXml, /<pane[^>]*xSplit="2"[^>]*ySplit="1"[^>]*topLeftCell="C6"/);
 assert.match(workbookXml, /<calcPr[^>]*fullCalcOnLoad="true"[^>]*forceFullCalc="true"/);
 assert.ok(
   workbookXml.indexOf('<calcPr') < workbookXml.indexOf('<extLst'),
   '重算配置必须位于扩展节点之前'
 );
-assert.match(detailPart, /<autoFilter ref="A1:H2"\/>/);
+assert.equal(julyDetail.B2.v, '测试流量公司', '7 月生成不得覆盖已生成的 6 月外采明细');
+assert.equal(julyDetail.B3.v, '测试软件公司', '7 月外采明细必须追加在 6 月明细之后');
+assert.match(detailPart, /<autoFilter ref="A1:H3"\/>/);
 assertWorkbookSheetRelationships(julyPath);
 
 const zeroDetailJunePath = path.join(verifyDirectory, 'budget-june-without-external-detail.xlsx');
