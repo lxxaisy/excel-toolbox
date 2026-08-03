@@ -99,8 +99,14 @@ const SHORT_SOFTWARE_COMPANY_NAMES = [
 const EXTERNAL_PURCHASE_REMARK = '10-外包采购、原材料采购';
 const LOAN_DRAW_REMARK = '17-取得贷款';
 const LOAN_REPAYMENT_REMARK = '25-归还贷款';
+const EXTERNAL_PURCHASE_LEDGER_SUFFIX = '-新致财务账簿';
+const DOMESTIC_ROLLING_SECTION = '集团国内部分';
+const MONTH_END_CASH_BALANCE_LABEL = '月末资金余额';
+const POST_INVESTMENT_CASH_LABEL = '扣投资后流动+非流动';
+const CASH_BALANCE_CHECK_ROW = 41;
 const BALANCE_OPENING_COLUMN = 5;
 const BALANCE_CLOSING_COLUMN = 11;
+const BALANCE_UNIT_DIVISOR = 10000;
 
 function cleanText(value) {
   if (value === null || value === undefined) {
@@ -225,6 +231,28 @@ function findMonthActualColumn(sheet, month) {
   throw new Error(`滚动资金测算表缺少${monthLabel}的“实际”列`);
 }
 
+function findDomesticMonthEndBalanceRow(sheet) {
+  const range = getSheetRange(sheet, '滚动资金测算表');
+  const domesticSectionRow = findExactValueRow(
+    sheet,
+    0,
+    DOMESTIC_ROLLING_SECTION,
+    '滚动资金测算表'
+  );
+
+  for (let rowIndex = domesticSectionRow + 1; rowIndex <= range.e.r; rowIndex += 1) {
+    if (getCellText(sheet, rowIndex, 0)) {
+      break;
+    }
+
+    if (getCellText(sheet, rowIndex, 1) === MONTH_END_CASH_BALANCE_LABEL) {
+      return rowIndex;
+    }
+  }
+
+  throw new Error(`滚动资金测算表“${DOMESTIC_ROLLING_SECTION}”缺少项目“${MONTH_END_CASH_BALANCE_LABEL}”`);
+}
+
 function readRollingSource(sheet, month) {
   if (getCellText(sheet, 1, 3) !== '现金流支出类型') {
     throw new Error('滚动资金测算表第 D 列不是“现金流支出类型”，无法按项目名称取数');
@@ -237,6 +265,14 @@ function readRollingSource(sheet, month) {
     const rowIndex = findExactValueRow(sheet, 3, label, '滚动资金测算表');
     values.set(label, parseNumber(getCellValue(sheet, rowIndex, actualColumn), `滚动资金测算表 ${label}`));
   });
+  const monthEndBalanceRow = findDomesticMonthEndBalanceRow(sheet);
+  values.set(
+    MONTH_END_CASH_BALANCE_LABEL,
+    parseNumber(
+      getCellValue(sheet, monthEndBalanceRow, actualColumn),
+      `滚动资金测算表 ${DOMESTIC_ROLLING_SECTION} ${MONTH_END_CASH_BALANCE_LABEL}`
+    )
+  );
 
   return values;
 }
@@ -263,11 +299,68 @@ function readBalanceSource(sheet, label) {
     `${label}总计期末余额`
   );
 
-  if (opening === null || closing === null) {
-    throw new Error(`${label}总计行的期初余额或期末余额为空`);
+  return {
+    opening: opening === null ? null : opening / BALANCE_UNIT_DIVISOR,
+    closing: closing === null ? null : closing / BALANCE_UNIT_DIVISOR
+  };
+}
+
+function parseBudgetHeaderPeriod(cell) {
+  if (!cell) {
+    return null;
   }
 
-  return { opening, closing };
+  if (typeof cell.v === 'number') {
+    const parsedDate = XLSX.SSF.parse_date_code(cell.v);
+    if (parsedDate?.y && parsedDate?.m) {
+      return { year: parsedDate.y, month: parsedDate.m };
+    }
+  }
+
+  const candidates = [cell.w, cell.v]
+    .map((value) => cleanText(value))
+    .filter(Boolean);
+
+  for (const value of candidates) {
+    const fullYearMatch = value.match(/(20\d{2})\D+([1-9]|1[0-2])(?:\D|$)/);
+    if (fullYearMatch) {
+      return { year: Number(fullYearMatch[1]), month: Number(fullYearMatch[2]) };
+    }
+
+    const shortYearDateMatch = value.match(/^([1-9]|1[0-2])\/\d{1,2}\/(\d{2}|\d{4})$/);
+    if (shortYearDateMatch) {
+      const year = Number(shortYearDateMatch[2]);
+      return {
+        year: year < 100 ? 2000 + year : year,
+        month: Number(shortYearDateMatch[1])
+      };
+    }
+  }
+
+  return null;
+}
+
+function findBudgetPeriodColumn(sheet, updatePeriod) {
+  const range = getSheetRange(sheet, '原预算表');
+  for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+    const headerPeriod = parseBudgetHeaderPeriod(getCell(sheet, 0, columnIndex));
+    if (headerPeriod?.year === updatePeriod.year && headerPeriod.month === updatePeriod.month) {
+      return columnIndex;
+    }
+  }
+
+  throw new Error(`原预算表缺少${updatePeriod.text}的月份列`);
+}
+
+function findBudgetRowByLabel(sheet, label) {
+  const range = getSheetRange(sheet, '原预算表');
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    if (getCellText(sheet, rowIndex, 1) === label) {
+      return rowIndex + 1;
+    }
+  }
+
+  throw new Error(`原预算表缺少项目“${label}”`);
 }
 
 function findBankHeaderRow(sheet) {
@@ -420,7 +513,9 @@ function buildExternalPurchaseDetails(records, companyMapping) {
     ))
     .map((record) => ({
       period: record.period,
-      company: record.company,
+      company: record.company.endsWith(EXTERNAL_PURCHASE_LEDGER_SUFFIX)
+        ? record.company.slice(0, -EXTERNAL_PURCHASE_LEDGER_SUFFIX.length)
+        : record.company,
       businessType: getBusinessType(record.summary, companyMapping),
       voucherNumber: record.voucherNumber,
       summary: record.summary,
@@ -522,10 +617,11 @@ function collectSourceNoteUpdates(sheet) {
 }
 
 function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond, privatePlacement, details) {
-  const targetColumnIndex = updatePeriod.month + 1;
+  const targetColumnIndex = findBudgetPeriodColumn(sheet, updatePeriod);
   const targetColumn = XLSX.utils.encode_col(targetColumnIndex);
   const addressForRow = (rowNumber) => `${targetColumn}${rowNumber}`;
   const values = new Map();
+  const formulas = new Map();
   const comments = new Map();
 
   DIRECT_TARGET_ROWS.forEach(([rowNumber, sourceLabel]) => {
@@ -544,6 +640,17 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
   values.set(addressForRow(5), privatePlacement.opening);
   values.set(addressForRow(26), convertibleBond.closing);
   values.set(addressForRow(27), privatePlacement.closing);
+
+  const monthEndCashBalance = rollingValues.get(MONTH_END_CASH_BALANCE_LABEL);
+  if (monthEndCashBalance === null || monthEndCashBalance === undefined) {
+    values.set(addressForRow(CASH_BALANCE_CHECK_ROW), null);
+  } else {
+    const postInvestmentCashRow = findBudgetRowByLabel(sheet, POST_INVESTMENT_CASH_LABEL);
+    formulas.set(
+      addressForRow(CASH_BALANCE_CHECK_ROW),
+      `${monthEndCashBalance}-${addressForRow(postInvestmentCashRow)}`
+    );
+  }
 
   const hasOtherExpenseData = OTHER_EXPENSE_LABELS.some((label) => (
     rollingValues.get(label) !== null && rollingValues.get(label) !== undefined
@@ -577,7 +684,9 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
   }
 
   return {
+    targetColumnIndex,
     values,
+    formulas,
     sourceNotes: collectSourceNoteUpdates(sheet),
     comments
   };
@@ -614,7 +723,7 @@ function setXmlAttribute(tag, name, value) {
     return tag.replace(pattern, ` ${name}="${value}"`);
   }
 
-  return tag.replace(/>$/, ` ${name}="${value}">`);
+  return tag.replace(/\/?>$/, (closing) => ` ${name}="${value}"${closing}`);
 }
 
 function buildCellStartTag(address, existingCell, styleReferenceCell) {
@@ -635,6 +744,10 @@ function buildCellXml(address, value, valueType, existingCell, styleReferenceCel
     return `${tag}<v>${value}</v></c>`;
   }
 
+  if (valueType === 'formula') {
+    return `${tag}<f>${escapeXml(value)}</f></c>`;
+  }
+
   tag = setXmlAttribute(tag, 't', 'inlineStr');
   const text = String(value);
   const spaceAttribute = /^\s|\s$|\n/.test(text) ? ' xml:space="preserve"' : '';
@@ -653,16 +766,18 @@ function replaceCellXml(sheetXml, address, value, valueType, styleReferenceAddre
   const rowNumber = Number(address.match(/\d+$/)?.[0]);
   const row = getXmlRowNode(sheetXml, rowNumber);
   if (!row) {
-    throw new Error(`预算模板缺少单元格所在行：${address}`);
+    throw new Error(`预算表缺少单元格所在行：${address}`);
   }
 
   return sheetXml.replace(row, row.replace(/<\/row>$/, `${nextCell}</row>`));
 }
 
-function buildDetailSheetXml(sheetXml, details, updatePeriod) {
+function buildDetailSheetXml(sheetXml, details, updatePeriod, fallbackSheetXml) {
   const sheetData = sheetXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
   const headerRow = sheetData && getXmlRowNode(sheetData, 1);
-  const templateDataRow = sheetData && getXmlRowNode(sheetData, 2);
+  const fallbackSheetData = fallbackSheetXml?.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
+  const templateDataRow = (sheetData && getXmlRowNode(sheetData, 2))
+    || (fallbackSheetData && getXmlRowNode(fallbackSheetData, 2));
   if (!sheetData || !headerRow || !templateDataRow) {
     throw new Error('外采账务明细模板缺少表头或样例数据行');
   }
@@ -679,17 +794,16 @@ function buildDetailSheetXml(sheetXml, details, updatePeriod) {
     throw new Error('外采账务明细模板缺少样例行样式');
   }
 
-  const detailRows = details.map((detail, index) => {
-    const rowNumber = index + 2;
+  const buildDetailRow = (detail, rowNumber) => {
     const values = [
-      toExcelDateSerial(updatePeriod.year, updatePeriod.month),
-      detail.company,
-      detail.businessType,
-      detail.voucherNumber,
-      detail.summary,
-      detail.counterpartySubject,
-      detail.amount,
-      detail.remark1
+      detail ? toExcelDateSerial(updatePeriod.year, updatePeriod.month) : null,
+      detail?.company ?? null,
+      detail?.businessType ?? null,
+      detail?.voucherNumber ?? null,
+      detail?.summary ?? null,
+      detail?.counterpartySubject ?? null,
+      detail?.amount ?? null,
+      detail?.remark1 ?? null
     ];
     const rowTag = setXmlAttribute(templateRowTag, 'r', rowNumber);
     const cells = values.map((value, columnIndex) => (
@@ -703,12 +817,17 @@ function buildDetailSheetXml(sheetXml, details, updatePeriod) {
     ));
 
     return `${rowTag}${cells.join('')}</row>`;
-  });
+  };
+
+  const detailRows = details.length > 0
+    ? details.map((detail, index) => buildDetailRow(detail, index + 2))
+    : [buildDetailRow(null, 2)];
 
   const lastRow = Math.max(1, details.length + 1);
   const dataRange = `A1:H${lastRow}`;
+  const dimensionRange = `A1:H${Math.max(2, lastRow)}`;
   sheetXml = sheetXml.replace(sheetData, `<sheetData>${headerRow}${detailRows.join('')}</sheetData>`);
-  sheetXml = sheetXml.replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="${dataRange}"/>`);
+  sheetXml = sheetXml.replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="${dimensionRange}"/>`);
 
   if (/<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/.test(sheetXml)) {
     sheetXml = sheetXml.replace(/<autoFilter\b[^>]*>[\s\S]*?<\/autoFilter>/, `<autoFilter ref="${dataRange}"/>`);
@@ -727,10 +846,11 @@ function getCommentNode(xml, reference) {
 }
 
 function getVmlCommentShape(xml, rowIndex, columnIndex) {
-  const pattern = new RegExp(
-    `<v:shape\\b[\\s\\S]*?<x:ClientData[^>]*>[\\s\\S]*?<x:Row>${rowIndex}<\\/x:Row><x:Column>${columnIndex}<\\/x:Column>[\\s\\S]*?<\\/x:ClientData><\\/v:shape>`
-  );
-  return xml.match(pattern)?.[0] ?? null;
+  const rowPattern = new RegExp(`<x:Row>${rowIndex}<\\/x:Row>`);
+  const columnPattern = new RegExp(`<x:Column>${columnIndex}<\\/x:Column>`);
+  return (xml.match(/<v:shape\b[\s\S]*?<\/v:shape>/g) || []).find((shape) => (
+    rowPattern.test(shape) && columnPattern.test(shape)
+  )) ?? null;
 }
 
 function buildDynamicCommentTextXml(text) {
@@ -762,114 +882,372 @@ function moveVmlCommentShape(shape, sourceColumn, targetColumn) {
   );
 }
 
-function updateDynamicComments(zip, comments) {
-  const commentsEntry = 'xl/comments1.xml';
-  const vmlEntry = 'xl/drawings/vmlDrawing1.vml';
-  if (!zip.getEntry(commentsEntry) || !zip.getEntry(vmlEntry)) {
-    throw new Error('资金滚动预算模板缺少批注部件');
-  }
-
-  const dynamicRows = [13, 20, 22];
-  const sourceColumn = 7;
-  const sourceNodes = new Map();
-  const sourceShapes = new Map();
-  let commentsXml = zip.readAsText(commentsEntry);
-  let vmlXml = zip.readAsText(vmlEntry);
-
-  dynamicRows.forEach((rowNumber) => {
-    sourceNodes.set(rowNumber, getCommentNode(commentsXml, `H${rowNumber}`));
-    sourceShapes.set(rowNumber, getVmlCommentShape(vmlXml, rowNumber - 1, sourceColumn));
-  });
-
-  for (let columnIndex = 2; columnIndex <= 13; columnIndex += 1) {
-    dynamicRows.forEach((rowNumber) => {
-      const commentNode = getCommentNode(
-        commentsXml,
-        `${XLSX.utils.encode_col(columnIndex)}${rowNumber}`
-      );
-      if (commentNode) {
-        commentsXml = commentsXml.replace(commentNode, '');
-      }
-
-      const shape = getVmlCommentShape(vmlXml, rowNumber - 1, columnIndex);
-      if (shape) {
-        vmlXml = vmlXml.replace(shape, '');
-      }
-    });
-  }
-
-  comments.forEach((text, address) => {
-    const rowNumber = Number(address.match(/\d+$/)?.[0]);
-    const targetColumn = XLSX.utils.decode_cell(address).c;
-    const sourceNode = sourceNodes.get(rowNumber);
-    const sourceShape = sourceShapes.get(rowNumber);
-    if (!sourceNode || !sourceShape) {
-      throw new Error(`资金滚动预算模板缺少动态批注位置：${address}`);
-    }
-
-    const nextComment = sourceNode
-      .replace(/ref="[^"]*"/, `ref="${address}"`)
-      .replace(/<text>[\s\S]*?<\/text>/, buildDynamicCommentTextXml(text));
-    commentsXml = commentsXml.replace(/<\/commentList>/, `${nextComment}</commentList>`);
-
-    const nextShape = moveVmlCommentShape(sourceShape, sourceColumn, targetColumn);
-    vmlXml = vmlXml.replace(/<\/xml>$/, `${nextShape}</xml>`);
-  });
-
-  zip.updateFile(commentsEntry, Buffer.from(commentsXml, 'utf8'));
-  zip.updateFile(vmlEntry, Buffer.from(vmlXml, 'utf8'));
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function removeUnusedSheetParts(zip) {
-  const unusedSheets = ['sheet2.xml', 'sheet4.xml', 'sheet5.xml'];
-  unusedSheets.forEach((sheetName) => {
-    const sheetEntry = `xl/worksheets/${sheetName}`;
-    const relationshipEntry = `xl/worksheets/_rels/${sheetName}.rels`;
-    if (zip.getEntry(sheetEntry)) {
-      zip.deleteFile(sheetEntry);
+function getXmlAttribute(tag, name) {
+  const attributeName = escapeRegExp(name);
+  return tag.match(new RegExp(`(?:^|\\s)${attributeName}="([^"]*)"`))?.[1] ?? null;
+}
+
+function resolveZipEntryPath(baseEntry, target) {
+  const targetPath = target.startsWith('/') ? target.slice(1) : path.posix.join(path.posix.dirname(baseEntry), target);
+  const entryPath = path.posix.normalize(targetPath).replace(/^\.\//, '');
+  if (entryPath === '..' || entryPath.startsWith('../')) {
+    throw new Error(`工作簿关系指向了无效文件：${target}`);
+  }
+  return entryPath;
+}
+
+function getWorksheetRelsEntry(worksheetEntry) {
+  return path.posix.join(
+    path.posix.dirname(worksheetEntry),
+    '_rels',
+    `${path.posix.basename(worksheetEntry)}.rels`
+  );
+}
+
+function parseRelationshipEntries(relationshipsXml) {
+  return Array.from(relationshipsXml.matchAll(/<Relationship\b[^>]*\/>/g)).map(([tag]) => ({
+    tag,
+    id: getXmlAttribute(tag, 'Id'),
+    type: getXmlAttribute(tag, 'Type'),
+    target: getXmlAttribute(tag, 'Target')
+  }));
+}
+
+function resolveWorkbookSheetParts(zip, label) {
+  const workbookEntry = 'xl/workbook.xml';
+  const workbookRelsEntry = 'xl/_rels/workbook.xml.rels';
+  if (!zip.getEntry(workbookEntry) || !zip.getEntry(workbookRelsEntry)) {
+    throw new Error(`${label}不是有效的 Excel 工作簿`);
+  }
+
+  const workbookXml = zip.readAsText(workbookEntry);
+  const relationshipsXml = zip.readAsText(workbookRelsEntry);
+  const sheetEntries = Array.from(workbookXml.matchAll(/<sheet\b[^>]*\/>/g)).map(([tag], sheetIndex) => ({
+    tag,
+    name: getXmlAttribute(tag, 'name'),
+    sheetId: getXmlAttribute(tag, 'sheetId'),
+    relationshipId: getXmlAttribute(tag, 'r:id'),
+    sheetIndex
+  }));
+  const relationships = parseRelationshipEntries(relationshipsXml);
+  const relationshipById = new Map(relationships.map((relationship) => [relationship.id, relationship]));
+
+  const resolveRequiredSheet = (sheetName) => {
+    const matches = sheetEntries.filter((sheet) => sheet.name === sheetName);
+    if (matches.length !== 1) {
+      throw new Error(`${label}必须且只能包含一个工作表“${sheetName}”`);
     }
-    if (zip.getEntry(relationshipEntry)) {
-      zip.deleteFile(relationshipEntry);
+
+    const sheet = matches[0];
+    const relationship = relationshipById.get(sheet.relationshipId);
+    if (!relationship?.type?.endsWith('/worksheet') || !relationship.target) {
+      throw new Error(`${label}工作表“${sheetName}”的关系无效`);
+    }
+
+    const worksheetEntry = resolveZipEntryPath(workbookEntry, relationship.target);
+    if (!zip.getEntry(worksheetEntry)) {
+      throw new Error(`${label}缺少工作表“${sheetName}”的数据文件`);
+    }
+
+    return {
+      ...sheet,
+      worksheetEntry,
+      worksheetRelsEntry: getWorksheetRelsEntry(worksheetEntry)
+    };
+  };
+
+  const worksheetRelationships = relationships
+    .filter((relationship) => relationship.type?.endsWith('/worksheet') && relationship.target)
+    .map((relationship) => ({
+      ...relationship,
+      worksheetEntry: resolveZipEntryPath(workbookEntry, relationship.target),
+      worksheetRelsEntry: getWorksheetRelsEntry(
+        resolveZipEntryPath(workbookEntry, relationship.target)
+      )
+    }));
+
+  const budget = resolveRequiredSheet(TEMPLATE_BUDGET_SHEET);
+  const detail = resolveRequiredSheet(TEMPLATE_DETAIL_SHEET);
+
+  return {
+    workbookEntry,
+    workbookRelsEntry,
+    budget,
+    detail,
+    removedSheetNames: sheetEntries
+      .filter((sheet) => sheet.name !== budget.name && sheet.name !== detail.name)
+      .map((sheet) => sheet.name),
+    worksheetRelationships
+  };
+}
+
+function resolveBudgetCommentParts(zip, budgetPart, label) {
+  if (!zip.getEntry(budgetPart.worksheetRelsEntry)) {
+    throw new Error(`${label}的预算表缺少批注关系`);
+  }
+
+  const relationships = parseRelationshipEntries(zip.readAsText(budgetPart.worksheetRelsEntry));
+  const commentsRelationship = relationships.find((relationship) => relationship.type?.endsWith('/comments'));
+  const vmlRelationship = relationships.find((relationship) => relationship.type?.endsWith('/vmlDrawing'));
+  if (!commentsRelationship?.target || !vmlRelationship?.target) {
+    throw new Error(`${label}的预算表缺少批注部件`);
+  }
+
+  const commentsEntry = resolveZipEntryPath(budgetPart.worksheetEntry, commentsRelationship.target);
+  const vmlEntry = resolveZipEntryPath(budgetPart.worksheetEntry, vmlRelationship.target);
+  if (!zip.getEntry(commentsEntry) || !zip.getEntry(vmlEntry)) {
+    throw new Error(`${label}的预算表批注部件不完整`);
+  }
+
+  return { commentsEntry, vmlEntry };
+}
+
+function getCommentAuthors(commentsXml) {
+  const authorsNode = commentsXml.match(/<authors>[\s\S]*?<\/authors>/)?.[0];
+  if (!authorsNode) {
+    throw new Error('预算表批注缺少作者信息');
+  }
+
+  return {
+    node: authorsNode,
+    values: Array.from(authorsNode.matchAll(/<author>([\s\S]*?)<\/author>/g)).map(([, author]) => author)
+  };
+}
+
+function getCommentAuthorText(commentsXml, commentNode) {
+  const authorId = Number(getXmlAttribute(commentNode.match(/^<comment\b[^>]*>/)?.[0] || '', 'authorId'));
+  const authors = getCommentAuthors(commentsXml).values;
+  if (!Number.isInteger(authorId) || authorId < 0 || authorId >= authors.length) {
+    throw new Error('预算表批注作者信息无效');
+  }
+
+  return authors[authorId];
+}
+
+function ensureCommentAuthor(commentsXml, author) {
+  const authors = getCommentAuthors(commentsXml);
+  const existingIndex = authors.values.indexOf(author);
+  if (existingIndex !== -1) {
+    return { commentsXml, authorId: existingIndex };
+  }
+
+  const nextAuthorsNode = authors.node.replace(/<\/authors>/, `<author>${author}</author></authors>`);
+  return {
+    commentsXml: commentsXml.replace(authors.node, nextAuthorsNode),
+    authorId: authors.values.length
+  };
+}
+
+function setCommentAuthorId(commentNode, authorId) {
+  return commentNode.replace(/^<comment\b[^>]*>/, (tag) => setXmlAttribute(tag, 'authorId', String(authorId)));
+}
+
+function findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, preferredColumn) {
+  const columns = [
+    preferredColumn,
+    ...Array.from({ length: 12 }, (_, index) => index + 2).filter((columnIndex) => columnIndex !== preferredColumn)
+  ];
+
+  for (const columnIndex of columns) {
+    const address = `${XLSX.utils.encode_col(columnIndex)}${rowNumber}`;
+    const commentNode = getCommentNode(commentsXml, address);
+    const shape = getVmlCommentShape(vmlXml, rowNumber - 1, columnIndex);
+    if (commentNode && shape) {
+      return { commentNode, shape, sourceColumn: columnIndex, sourceCommentsXml: commentsXml };
+    }
+  }
+
+  return null;
+}
+
+function removeCommentAt(commentsXml, vmlXml, address, rowNumber, columnIndex) {
+  const commentNode = getCommentNode(commentsXml, address);
+  const shape = getVmlCommentShape(vmlXml, rowNumber - 1, columnIndex);
+  return {
+    commentsXml: commentNode ? commentsXml.replace(commentNode, '') : commentsXml,
+    vmlXml: shape ? vmlXml.replace(shape, '') : vmlXml
+  };
+}
+
+function assignNextVmlShapeId(vmlXml, shape) {
+  const usedIds = Array.from(vmlXml.matchAll(/\bid="_x0000_s(\d+)"/g)).map(([, id]) => Number(id));
+  const nextId = Math.max(1024, ...usedIds) + 1;
+  return shape.replace(/\bid="_x0000_s\d+"/, `id="_x0000_s${nextId}"`);
+}
+
+function updateDynamicComments(zip, budgetPart, comments, targetColumn, templateZip, templateBudgetPart) {
+  const commentParts = resolveBudgetCommentParts(zip, budgetPart, '原预算表');
+  const templateCommentParts = resolveBudgetCommentParts(templateZip, templateBudgetPart, '资金滚动预算模板');
+  let commentsXml = zip.readAsText(commentParts.commentsEntry);
+  let vmlXml = zip.readAsText(commentParts.vmlEntry);
+  const templateCommentsXml = templateZip.readAsText(templateCommentParts.commentsEntry);
+  const templateVmlXml = templateZip.readAsText(templateCommentParts.vmlEntry);
+
+  [13, 20, 22].forEach((rowNumber) => {
+    const address = `${XLSX.utils.encode_col(targetColumn)}${rowNumber}`;
+    const text = comments.get(address);
+    let seed = null;
+    let authorId = null;
+
+    if (text !== null && text !== undefined) {
+      seed = findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, targetColumn)
+        || findDynamicCommentSeed(templateCommentsXml, templateVmlXml, rowNumber, 7);
+      if (!seed) {
+        throw new Error(`资金滚动预算模板缺少动态批注位置：${address}`);
+      }
+
+      const author = getCommentAuthorText(seed.sourceCommentsXml, seed.commentNode);
+      const authorResult = ensureCommentAuthor(commentsXml, author);
+      commentsXml = authorResult.commentsXml;
+      authorId = authorResult.authorId;
+    }
+
+    const withoutTarget = removeCommentAt(commentsXml, vmlXml, address, rowNumber, targetColumn);
+    commentsXml = withoutTarget.commentsXml;
+    vmlXml = withoutTarget.vmlXml;
+
+    if (text !== null && text !== undefined) {
+      const nextComment = setCommentAuthorId(
+        seed.commentNode
+          .replace(/ref="[^"]*"/, `ref="${address}"`)
+          .replace(/<text>[\s\S]*?<\/text>/, buildDynamicCommentTextXml(text)),
+        authorId
+      );
+      commentsXml = commentsXml.replace(/<\/commentList>/, `${nextComment}</commentList>`);
+
+      const nextShape = assignNextVmlShapeId(
+        vmlXml,
+        moveVmlCommentShape(seed.shape, seed.sourceColumn, targetColumn)
+      );
+      vmlXml = vmlXml.replace(/<\/xml>$/, `${nextShape}</xml>`);
     }
   });
 
+  zip.updateFile(commentParts.commentsEntry, Buffer.from(commentsXml, 'utf8'));
+  zip.updateFile(commentParts.vmlEntry, Buffer.from(vmlXml, 'utf8'));
+}
+
+function retainOutputSheetParts(zip, parts) {
+  const retainedRelationshipIds = new Set([parts.budget.relationshipId, parts.detail.relationshipId]);
+  const removedRelationships = parts.worksheetRelationships.filter((relationship) => (
+    !retainedRelationshipIds.has(relationship.id)
+  ));
+
+  removedRelationships.forEach((relationship) => {
+    if (zip.getEntry(relationship.worksheetEntry)) {
+      zip.deleteFile(relationship.worksheetEntry);
+    }
+    if (zip.getEntry(relationship.worksheetRelsEntry)) {
+      zip.deleteFile(relationship.worksheetRelsEntry);
+    }
+  });
+
+  let relationshipsXml = zip.readAsText(parts.workbookRelsEntry);
+  relationshipsXml = relationshipsXml.replace(/<Relationship\b[^>]*\/>/g, (relationshipTag) => {
+    const id = getXmlAttribute(relationshipTag, 'Id');
+    const type = getXmlAttribute(relationshipTag, 'Type');
+    return type?.endsWith('/worksheet') && !retainedRelationshipIds.has(id) ? '' : relationshipTag;
+  });
+  zip.updateFile(parts.workbookRelsEntry, Buffer.from(relationshipsXml, 'utf8'));
+
   let contentTypesXml = zip.readAsText('[Content_Types].xml');
-  unusedSheets.forEach((sheetName) => {
-    const escapedSheetName = sheetName.replace('.', '\\.');
+  removedRelationships.forEach((relationship) => {
+    const partName = escapeRegExp(`/${relationship.worksheetEntry}`);
     contentTypesXml = contentTypesXml.replace(
-      new RegExp(`<Override PartName="/xl/worksheets/${escapedSheetName}"[^>]*\\/>`),
+      new RegExp(`<Override\\b(?=[^>]*\\bPartName="${partName}")[^>]*\\/>`, 'g'),
       ''
     );
   });
   zip.updateFile('[Content_Types].xml', Buffer.from(contentTypesXml, 'utf8'));
 }
 
-function updateWorkbookMetadata(zip, detailLastRow) {
-  const workbookEntry = 'xl/workbook.xml';
-  let workbookXml = zip.readAsText(workbookEntry);
-  const sheetsXml = `<sheets><sheet name="${TEMPLATE_BUDGET_SHEET}" sheetId="1" r:id="rId1"/><sheet name="${TEMPLATE_DETAIL_SHEET}" sheetId="2" r:id="rId3"/></sheets>`;
-  const filterNameXml = `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'${TEMPLATE_DETAIL_SHEET}'!$A$1:$H$${detailLastRow}</definedName></definedNames>`;
+function getDefinedNameTag(node) {
+  return node.match(/^<definedName\b[^>]*>/)?.[0] ?? null;
+}
+
+function referencesRemovedSheet(definedNameNode, removedSheetNames) {
+  return removedSheetNames.some((sheetName) => {
+    const quotedName = escapeRegExp(sheetName.replace(/'/g, "''"));
+    const unquotedName = escapeRegExp(sheetName);
+    return new RegExp(`(?:'${quotedName}'|${unquotedName})!`).test(definedNameNode);
+  });
+}
+
+function rebuildDefinedNames(workbookXml, parts, detailLastRow) {
+  const filterName = '_xlnm._FilterDatabase';
+  const filterNode = `<definedName name="${filterName}" localSheetId="1" hidden="1">'${TEMPLATE_DETAIL_SHEET}'!$A$1:$H$${detailLastRow}</definedName>`;
+  const definedNamesNode = workbookXml.match(/<definedNames\b[^>]*>[\s\S]*?<\/definedNames>/)?.[0];
+  const currentNames = definedNamesNode
+    ? Array.from(definedNamesNode.matchAll(/<definedName\b[^>]*?(?:\/>|>[\s\S]*?<\/definedName>)/g)).map(([node]) => node)
+    : [];
+  const retainedNames = currentNames.flatMap((node) => {
+    const tag = getDefinedNameTag(node);
+    const name = tag && getXmlAttribute(tag, 'name');
+    const localSheetId = tag && getXmlAttribute(tag, 'localSheetId');
+    const isDetailFilterName = name === filterName && Number(localSheetId) === parts.detail.sheetIndex;
+    if (!tag || isDetailFilterName || referencesRemovedSheet(node, parts.removedSheetNames)) {
+      return [];
+    }
+
+    if (localSheetId === null) {
+      return [node];
+    }
+
+    if (Number(localSheetId) === parts.budget.sheetIndex) {
+      return [node.replace(/^<definedName\b[^>]*>/, (currentTag) => (
+        setXmlAttribute(currentTag, 'localSheetId', '0')
+      ))];
+    }
+
+    if (Number(localSheetId) === parts.detail.sheetIndex) {
+      return [node.replace(/^<definedName\b[^>]*>/, (currentTag) => (
+        setXmlAttribute(currentTag, 'localSheetId', '1')
+      ))];
+    }
+
+    return [];
+  });
+  const nextDefinedNames = `<definedNames>${retainedNames.join('')}${filterNode}</definedNames>`;
+
+  if (definedNamesNode) {
+    return workbookXml.replace(definedNamesNode, nextDefinedNames);
+  }
+
+  if (/<calcPr\b/.test(workbookXml)) {
+    return workbookXml.replace(/<calcPr\b/, `${nextDefinedNames}<calcPr`);
+  }
+
+  if (/<extLst\b/.test(workbookXml)) {
+    return workbookXml.replace(/<extLst\b/, `${nextDefinedNames}<extLst`);
+  }
+
+  return workbookXml.replace(/<\/workbook>/, `${nextDefinedNames}</workbook>`);
+}
+
+function updateWorkbookMetadata(zip, parts, detailLastRow) {
+  let workbookXml = zip.readAsText(parts.workbookEntry);
+  const sheetsXml = `<sheets>${parts.budget.tag}${parts.detail.tag}</sheets>`;
   const calculationProperties = '<calcPr calcMode="auto" calcOnSave="true" calcCompleted="false" fullCalcOnLoad="true" forceFullCalc="true"/>';
 
   workbookXml = workbookXml.replace(/<sheets>[\s\S]*?<\/sheets>/, sheetsXml);
-  workbookXml = /<definedNames>[\s\S]*?<\/definedNames>/.test(workbookXml)
-    ? workbookXml.replace(/<definedNames>[\s\S]*?<\/definedNames>/, filterNameXml)
-    : workbookXml.replace(/<calcPr\b/, `${filterNameXml}<calcPr`);
-  workbookXml = workbookXml.replace(/firstSheet="\d+"/, 'firstSheet="0"');
+  workbookXml = rebuildDefinedNames(workbookXml, parts, detailLastRow);
+  workbookXml = workbookXml.replace(/<workbookView\b[^>]*>/g, (tag) => (
+    setXmlAttribute(setXmlAttribute(tag, 'firstSheet', '0'), 'activeTab', '0')
+  ));
   if (/<calcPr\b[^>]*\/>/.test(workbookXml)) {
     workbookXml = workbookXml.replace(/<calcPr\b[^>]*\/>/, calculationProperties);
   } else if (/<calcPr\b[^>]*>[\s\S]*?<\/calcPr>/.test(workbookXml)) {
     workbookXml = workbookXml.replace(/<calcPr\b[^>]*>[\s\S]*?<\/calcPr>/, calculationProperties);
+  } else if (/<extLst\b/.test(workbookXml)) {
+    workbookXml = workbookXml.replace(/<extLst\b/, `${calculationProperties}<extLst`);
   } else {
     workbookXml = workbookXml.replace(/<\/workbook>/, `${calculationProperties}</workbook>`);
   }
-  zip.updateFile(workbookEntry, Buffer.from(workbookXml, 'utf8'));
-
-  let relationshipsXml = zip.readAsText('xl/_rels/workbook.xml.rels');
-  relationshipsXml = relationshipsXml.replace(/<Relationship\b[^>]*\/>/g, (relationship) => (
-    /Id="rId(?:2|4|5)"/.test(relationship) ? '' : relationship
-  ));
-  zip.updateFile('xl/_rels/workbook.xml.rels', Buffer.from(relationshipsXml, 'utf8'));
+  zip.updateFile(parts.workbookEntry, Buffer.from(workbookXml, 'utf8'));
 
   const appEntry = 'docProps/app.xml';
   if (zip.getEntry(appEntry)) {
@@ -886,25 +1264,59 @@ function updateWorkbookMetadata(zip, detailLastRow) {
   }
 }
 
-function buildTemplateBasedOutput(templatePath, budgetChanges, details, updatePeriod) {
-  const zip = new AdmZip(templatePath);
-  const budgetEntry = 'xl/worksheets/sheet1.xml';
-  const detailEntry = 'xl/worksheets/sheet3.xml';
-  let budgetXml = zip.readAsText(budgetEntry);
+function getCompatibleDetailStyleSource(zip, templateZip, templateParts) {
+  const stylesEntry = 'xl/styles.xml';
+  if (!zip.getEntry(stylesEntry) || !templateZip.getEntry(stylesEntry)) {
+    return undefined;
+  }
+
+  return zip.readFile(stylesEntry).equals(templateZip.readFile(stylesEntry))
+    ? templateZip.readAsText(templateParts.detail.worksheetEntry)
+    : undefined;
+}
+
+function buildBudgetWorkbookOutput(budgetWorkbookPath, templatePath, budgetChanges, details, updatePeriod) {
+  const zip = new AdmZip(budgetWorkbookPath);
+  const parts = resolveWorkbookSheetParts(zip, '原预算表');
+  const templateZip = new AdmZip(templatePath);
+  const templateParts = resolveWorkbookSheetParts(templateZip, '资金滚动预算模板');
+  let budgetXml = zip.readAsText(parts.budget.worksheetEntry);
+  const cashBalanceCheckAddress = `${XLSX.utils.encode_col(budgetChanges.targetColumnIndex)}${CASH_BALANCE_CHECK_ROW}`;
 
   budgetChanges.values.forEach((value, address) => {
-    budgetXml = replaceCellXml(budgetXml, address, value, 'number');
+    budgetXml = replaceCellXml(
+      budgetXml,
+      address,
+      value,
+      'number',
+      address === cashBalanceCheckAddress ? 'C41' : address
+    );
+  });
+  budgetChanges.formulas.forEach((formula, address) => {
+    budgetXml = replaceCellXml(budgetXml, address, formula, 'formula', 'C41');
   });
   budgetChanges.sourceNotes.forEach((value, address) => {
     budgetXml = replaceCellXml(budgetXml, address, value, 'string');
   });
-  zip.updateFile(budgetEntry, Buffer.from(budgetXml, 'utf8'));
+  zip.updateFile(parts.budget.worksheetEntry, Buffer.from(budgetXml, 'utf8'));
 
-  const detailResult = buildDetailSheetXml(zip.readAsText(detailEntry), details, updatePeriod);
-  zip.updateFile(detailEntry, Buffer.from(detailResult.sheetXml, 'utf8'));
-  updateDynamicComments(zip, budgetChanges.comments);
-  removeUnusedSheetParts(zip);
-  updateWorkbookMetadata(zip, detailResult.lastRow);
+  const detailResult = buildDetailSheetXml(
+    zip.readAsText(parts.detail.worksheetEntry),
+    details,
+    updatePeriod,
+    getCompatibleDetailStyleSource(zip, templateZip, templateParts)
+  );
+  zip.updateFile(parts.detail.worksheetEntry, Buffer.from(detailResult.sheetXml, 'utf8'));
+  updateDynamicComments(
+    zip,
+    parts.budget,
+    budgetChanges.comments,
+    budgetChanges.targetColumnIndex,
+    templateZip,
+    templateParts.budget
+  );
+  retainOutputSheetParts(zip, parts);
+  updateWorkbookMetadata(zip, parts, detailResult.lastRow);
 
   return zip.toBuffer();
 }
@@ -988,17 +1400,24 @@ export async function discoverRollingBudgetSourceFiles(folderPath) {
 
 export async function generateRollingBudget({
   updatePeriod,
+  budgetWorkbookPath,
   rollingMeasurementPath,
   bankTransactionPath,
   convertibleBondBalancePath,
   privatePlacementBalancePath,
   templatePath
 } = {}) {
+  if (path.extname(budgetWorkbookPath || '').toLowerCase() !== '.xlsx') {
+    throw new Error('原预算表必须是 .xlsx 文件');
+  }
+
   const period = parseUpdatePeriod(updatePeriod);
   const templateWorkbook = readWorkbook(templatePath, '资金滚动预算模板');
-  const budgetSheet = getRequiredSheet(templateWorkbook, TEMPLATE_BUDGET_SHEET, '资金滚动预算模板');
   getRequiredSheet(templateWorkbook, TEMPLATE_DETAIL_SHEET, '资金滚动预算模板');
   const companyMapping = readCompanyTypeMapping(templateWorkbook.Sheets[TEMPLATE_COMPANY_MAPPING_SHEET]);
+  const budgetWorkbook = readWorkbook(budgetWorkbookPath, '原预算表');
+  const budgetSheet = getRequiredSheet(budgetWorkbook, TEMPLATE_BUDGET_SHEET, '原预算表');
+  getRequiredSheet(budgetWorkbook, TEMPLATE_DETAIL_SHEET, '原预算表');
 
   const rollingWorkbook = readWorkbook(rollingMeasurementPath, '滚动资金测算表');
   const bankWorkbook = readWorkbook(bankTransactionPath, '银行流水');
@@ -1032,5 +1451,11 @@ export async function generateRollingBudget({
     { bankRecords, externalPurchaseDetails }
   );
 
-  return buildTemplateBasedOutput(templatePath, budgetChanges, externalPurchaseDetails, period);
+  return buildBudgetWorkbookOutput(
+    budgetWorkbookPath,
+    templatePath,
+    budgetChanges,
+    externalPurchaseDetails,
+    period
+  );
 }

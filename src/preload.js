@@ -23,5 +23,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportCashflowAnalysisHtml: (data) => ipcRenderer.invoke('cashflow-analysis:export-html', data),
   openRollingBudgetFolder: () => ipcRenderer.invoke('dialog:openRollingBudgetFolder'),
   openRollingBudgetFile: () => ipcRenderer.invoke('dialog:openRollingBudgetFile'),
+  openRollingBudgetWorkbook: () => ipcRenderer.invoke('dialog:openRollingBudgetWorkbook'),
   generateRollingBudget: (data) => ipcRenderer.invoke('rolling-budget:generate', data)
 });

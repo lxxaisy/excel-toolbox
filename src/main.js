@@ -112,6 +112,15 @@ ipcMain.handle('dialog:openRollingBudgetFile', async () => {
   return canceled ? null : filePaths[0];
 });
 
+ipcMain.handle('dialog:openRollingBudgetWorkbook', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: '选择原预算表',
+    properties: ['openFile'],
+    filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+  });
+  return canceled ? null : filePaths[0];
+});
+
 // 2. Excel Logic Handler (Example: Read Info)
 ipcMain.handle('excel:readInfo', async (event, filePath) => {
   try {
@@ -370,11 +379,16 @@ ipcMain.handle('cashflow-analysis:export-html', async (event, { analysis, config
 
 ipcMain.handle('rolling-budget:generate', async (event, {
   updatePeriod,
+  budgetWorkbookPath,
   sourceMode,
   folderPath,
   sourcePaths
 } = {}) => {
   try {
+    if (!budgetWorkbookPath) {
+      throw new Error('请选择原预算表');
+    }
+
     let resolvedSourcePaths;
     if (sourceMode === 'folder') {
       if (!folderPath) {
@@ -390,6 +404,7 @@ ipcMain.handle('rolling-budget:generate', async (event, {
     const templatePath = path.join(getTemplateBaseDir(), '资金滚动预算模板.xlsx');
     const buffer = await generateRollingBudget({
       updatePeriod,
+      budgetWorkbookPath,
       ...resolvedSourcePaths,
       templatePath
     });

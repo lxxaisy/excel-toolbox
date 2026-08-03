@@ -20,6 +20,18 @@
         </section>
 
         <section class="border-t border-slate-200 pt-7">
+          <div class="grid gap-3 sm:grid-cols-[10rem_auto_minmax(0,1fr)] sm:items-center sm:gap-4">
+            <label class="text-base font-semibold text-slate-700">原预算表</label>
+            <el-button type="primary" plain :disabled="loading" @click="selectBudgetWorkbook">
+              选择原预算表
+            </el-button>
+            <div class="min-w-0 truncate text-sm font-mono text-slate-600">
+              {{ budgetWorkbookPath || '请选择原预算表 Excel 文件' }}
+            </div>
+          </div>
+        </section>
+
+        <section class="border-t border-slate-200 pt-7">
           <div class="flex flex-wrap items-center justify-between gap-4">
             <label class="text-base font-semibold text-slate-700">资料来源</label>
             <el-radio-group v-model="sourceMode" class="source-mode" aria-label="资料来源">
@@ -82,6 +94,7 @@ import { ElMessage } from 'element-plus';
 const updatePeriod = ref('');
 const sourceMode = ref('folder');
 const folderPath = ref('');
+const budgetWorkbookPath = ref('');
 const loading = ref(false);
 const sourcePaths = reactive({
   rollingMeasurementPath: '',
@@ -100,7 +113,7 @@ const sourceFields = [
 ];
 
 const canGenerate = computed(() => {
-  if (!updatePeriod.value) {
+  if (!updatePeriod.value || !budgetWorkbookPath.value) {
     return false;
   }
 
@@ -120,6 +133,18 @@ const selectFolder = async () => {
   } catch (error) {
     console.error('Select rolling budget folder error:', error);
     ElMessage.error('选择资料文件夹失败');
+  }
+};
+
+const selectBudgetWorkbook = async () => {
+  try {
+    const selectedPath = await window.electronAPI.openRollingBudgetWorkbook();
+    if (selectedPath) {
+      budgetWorkbookPath.value = selectedPath;
+    }
+  } catch (error) {
+    console.error('Select rolling budget workbook error:', error);
+    ElMessage.error('选择原预算表失败');
   }
 };
 
@@ -143,6 +168,7 @@ const generate = async () => {
 
   const payload = {
     updatePeriod: updatePeriod.value,
+    budgetWorkbookPath: budgetWorkbookPath.value,
     sourceMode: sourceMode.value,
     folderPath: sourceMode.value === 'folder' ? folderPath.value : '',
     sourcePaths: sourceMode.value === 'manual'
