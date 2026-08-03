@@ -104,6 +104,8 @@ const EXTERNAL_PURCHASE_LEDGER_SUFFIX = '-新致财务账簿';
 const DOMESTIC_ROLLING_SECTION = '集团国内部分';
 const MONTH_END_CASH_BALANCE_LABEL = '月末资金余额';
 const POST_INVESTMENT_CASH_LABEL = '扣投资后流动+非流动';
+const OPENING_CASH_LABEL = '期初流动资金';
+const OPENING_CASH_SOURCE_LABEL = '扣投资后流动';
 const CASH_BALANCE_CHECK_ROW = 41;
 const SOURCE_NOTE_START_ROW = 45;
 const SOURCE_NOTE_END_ROW = 49;
@@ -642,6 +644,29 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
   const values = new Map();
   const formulas = new Map();
   const comments = new Map();
+  const openingCashFormulaAddresses = new Set();
+  const openingCashRow = findBudgetRowByLabel(sheet, OPENING_CASH_LABEL);
+  const openingCashSourceRow = findBudgetRowByLabel(sheet, OPENING_CASH_SOURCE_LABEL);
+  const budgetRange = getSheetRange(sheet, '原预算表');
+  let previousPeriodColumnIndex = null;
+
+  for (let columnIndex = budgetRange.s.c; columnIndex <= budgetRange.e.c; columnIndex += 1) {
+    if (!parseBudgetHeaderPeriod(getCell(sheet, 0, columnIndex))) {
+      continue;
+    }
+
+    if (previousPeriodColumnIndex !== null && columnIndex >= targetColumnIndex) {
+      const openingCashAddress = `${XLSX.utils.encode_col(columnIndex)}${openingCashRow}`;
+      const openingCashFormula = `${XLSX.utils.encode_col(previousPeriodColumnIndex)}${openingCashSourceRow}`;
+
+      if (getCell(sheet, openingCashRow - 1, columnIndex)?.f !== openingCashFormula) {
+        formulas.set(openingCashAddress, openingCashFormula);
+        openingCashFormulaAddresses.add(openingCashAddress);
+      }
+    }
+
+    previousPeriodColumnIndex = columnIndex;
+  }
 
   DIRECT_TARGET_ROWS.forEach(([rowNumber, sourceLabel]) => {
     values.set(addressForRow(rowNumber), rollingValues.get(sourceLabel));
@@ -706,6 +731,7 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
     targetColumnIndex,
     values,
     formulas,
+    openingCashFormulaAddresses,
     sourceNotes: collectSourceNoteUpdates(sheet),
     comments
   };
@@ -725,6 +751,19 @@ function getXmlCellNode(xml, address) {
     `<c\\b(?=[^>]*\\br="${address}")[^>]*?(?:\\/>|>[\\s\\S]*?<\\/c>)`
   );
   return xml.match(pattern)?.[0] ?? null;
+}
+
+function getPreviousCellInRow(xml, address) {
+  const { c: columnIndex, r: rowIndex } = XLSX.utils.decode_cell(address);
+
+  for (let index = columnIndex - 1; index >= 0; index -= 1) {
+    const cell = getXmlCellNode(xml, XLSX.utils.encode_cell({ r: rowIndex, c: index }));
+    if (cell) {
+      return cell;
+    }
+  }
+
+  return null;
 }
 
 function getXmlRowNode(xml, rowNumber) {
@@ -773,9 +812,17 @@ function buildCellXml(address, value, valueType, existingCell, styleReferenceCel
   return `${tag}<is><t${spaceAttribute}>${escapeXml(text).replace(/\n/g, '&#10;')}</t></is></c>`;
 }
 
-function replaceCellXml(sheetXml, address, value, valueType, styleReferenceAddress = address) {
+function replaceCellXml(
+  sheetXml,
+  address,
+  value,
+  valueType,
+  styleReferenceAddress = address,
+  fallbackStyleReferenceCell = null
+) {
   const existingCell = getXmlCellNode(sheetXml, address);
-  const styleReferenceCell = getXmlCellNode(sheetXml, styleReferenceAddress);
+  const styleReferenceCell = getXmlCellNode(sheetXml, styleReferenceAddress)
+    ?? fallbackStyleReferenceCell;
   const nextCell = buildCellXml(address, value, valueType, existingCell, styleReferenceCell);
 
   if (existingCell) {
@@ -1351,13 +1398,17 @@ function updateWorkbookMetadata(zip, parts, detailLastRow) {
   }
 }
 
-function getCompatibleDetailStyleSource(zip, templateZip, templateParts) {
+function hasCompatibleWorkbookStyles(zip, templateZip) {
   const stylesEntry = 'xl/styles.xml';
   if (!zip.getEntry(stylesEntry) || !templateZip.getEntry(stylesEntry)) {
-    return undefined;
+    return false;
   }
 
-  return zip.readFile(stylesEntry).equals(templateZip.readFile(stylesEntry))
+  return zip.readFile(stylesEntry).equals(templateZip.readFile(stylesEntry));
+}
+
+function getCompatibleDetailStyleSource(zip, templateZip, templateParts) {
+  return hasCompatibleWorkbookStyles(zip, templateZip)
     ? templateZip.readAsText(templateParts.detail.worksheetEntry)
     : undefined;
 }
@@ -1375,6 +1426,9 @@ function buildBudgetWorkbookOutput(
   const templateZip = new AdmZip(templatePath);
   const templateParts = resolveWorkbookSheetParts(templateZip, '资金滚动预算模板');
   let budgetXml = zip.readAsText(parts.budget.worksheetEntry);
+  const compatibleBudgetStyleSource = hasCompatibleWorkbookStyles(zip, templateZip)
+    ? templateZip.readAsText(templateParts.budget.worksheetEntry)
+    : null;
   const cashBalanceCheckAddress = `${XLSX.utils.encode_col(budgetChanges.targetColumnIndex)}${CASH_BALANCE_CHECK_ROW}`;
 
   budgetChanges.values.forEach((value, address) => {
@@ -1387,7 +1441,20 @@ function buildBudgetWorkbookOutput(
     );
   });
   budgetChanges.formulas.forEach((formula, address) => {
-    budgetXml = replaceCellXml(budgetXml, address, formula, 'formula', 'C41');
+    const styleReferenceAddress = address === cashBalanceCheckAddress ? 'C41' : address;
+    const fallbackStyleReferenceCell = budgetChanges.openingCashFormulaAddresses.has(address)
+      ? compatibleBudgetStyleSource
+        ? getXmlCellNode(compatibleBudgetStyleSource, address)
+        : getPreviousCellInRow(budgetXml, address)
+      : null;
+    budgetXml = replaceCellXml(
+      budgetXml,
+      address,
+      formula,
+      'formula',
+      styleReferenceAddress,
+      fallbackStyleReferenceCell
+    );
   });
   budgetChanges.sourceNotes.forEach((value, address) => {
     budgetXml = replaceCellXml(budgetXml, address, value, 'string');

@@ -11,6 +11,20 @@ const workspaceRoot = path.resolve(import.meta.dirname, '..');
 const templatePath = path.join(workspaceRoot, 'vba', '资金滚动预算模板.xlsx');
 const verifyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'rolling-budget-verify-'));
 const LEGACY_DETAIL_SHEET = '外采账务明细';
+const OPENING_CASH_FORMULAS = [
+  ['D2', 'C39'],
+  ['E2', 'D39'],
+  ['F2', 'E39'],
+  ['G2', 'F39'],
+  ['H2', 'G39'],
+  ['I2', 'H39'],
+  ['J2', 'I39'],
+  ['K2', 'J39'],
+  ['L2', 'K39'],
+  ['M2', 'L39'],
+  ['N2', 'M39']
+];
+const FORWARD_OPENING_CASH_FORMULAS = OPENING_CASH_FORMULAS.slice(4);
 
 const rollingLabels = [
   '销售回笼',
@@ -246,6 +260,49 @@ function clearDetailHistory(zip, sheetName) {
   zip.updateFile(detailPart, Buffer.from(detailXml, 'utf8'));
 }
 
+function clearBudgetCell(zip, address) {
+  const budgetPart = getSheetPart(zip, '2026年资金滚动预算');
+  let budgetXml = zip.readAsText(budgetPart);
+  const cellPattern = new RegExp(
+    `<c\\b(?=[^>]*\\br="${address}")[^>]*?(?:\\/>|>[\\s\\S]*?<\\/c>)`
+  );
+  const cell = budgetXml.match(cellPattern)?.[0];
+  assert.ok(cell, `测试原表必须包含 ${address}`);
+  const cellTag = cell.match(/^<c\b[^>]*>/)?.[0];
+  assert.ok(cellTag, `测试原表必须包含 ${address} 样式`);
+
+  budgetXml = budgetXml.replace(cell, cellTag.replace(/>$/, '/>'));
+  zip.updateFile(budgetPart, Buffer.from(budgetXml, 'utf8'));
+}
+
+function removeBudgetCell(zip, address) {
+  const budgetPart = getSheetPart(zip, '2026年资金滚动预算');
+  let budgetXml = zip.readAsText(budgetPart);
+  const cellPattern = new RegExp(
+    `<c\\b(?=[^>]*\\br="${address}")[^>]*?(?:\\/>|>[\\s\\S]*?<\\/c>)`
+  );
+  const cell = budgetXml.match(cellPattern)?.[0];
+  assert.ok(cell, `测试原表必须包含 ${address}`);
+
+  budgetXml = budgetXml.replace(cell, '');
+  zip.updateFile(budgetPart, Buffer.from(budgetXml, 'utf8'));
+}
+
+function setBudgetCellFormula(zip, address, formula) {
+  const budgetPart = getSheetPart(zip, '2026年资金滚动预算');
+  let budgetXml = zip.readAsText(budgetPart);
+  const cellPattern = new RegExp(
+    `<c\\b(?=[^>]*\\br="${address}")[^>]*?(?:\\/>|>[\\s\\S]*?<\\/c>)`
+  );
+  const cell = budgetXml.match(cellPattern)?.[0];
+  assert.ok(cell, `测试原表必须包含 ${address}`);
+  const cellTag = cell.match(/^<c\b[^>]*>/)?.[0];
+  assert.ok(cellTag, `测试原表必须包含 ${address} 样式`);
+
+  budgetXml = budgetXml.replace(cell, `${cellTag}<f>${formula}</f></c>`);
+  zip.updateFile(budgetPart, Buffer.from(budgetXml, 'utf8'));
+}
+
 function createCustomNamedBaseWorkbook() {
   const outputPath = path.join(verifyDirectory, 'budget-with-custom-names.xlsx');
   const zip = new AdmZip(templatePath);
@@ -272,6 +329,10 @@ function createCustomNamedBaseWorkbook() {
   });
   zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
   clearDetailHistory(zip, '生成后 外采账务明细');
+  setBudgetCellFormula(zip, 'D2', 'C38');
+  clearBudgetCell(zip, 'H2');
+  removeBudgetCell(zip, 'I2');
+  ['J2', 'K2', 'L2', 'M2', 'N2'].forEach((address) => clearBudgetCell(zip, address));
   fs.writeFileSync(outputPath, zip.toBuffer());
   return outputPath;
 }
@@ -304,6 +365,16 @@ function getWorksheetDataRows(filePath, sheetName) {
   const sheetData = sheetXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
   assert.ok(sheetData, `${sheetName}必须包含工作表数据`);
   return Array.from(sheetData.matchAll(/<row\b[^>]*(?:\/>|>[\s\S]*?<\/row>)/g)).map(([row]) => row);
+}
+
+function getWorksheetCellStyleIndex(filePath, sheetName, address) {
+  const zip = new AdmZip(filePath);
+  const sheetXml = zip.readAsText(getSheetPart(zip, sheetName));
+  const cell = sheetXml.match(new RegExp(
+    `<c\\b(?=[^>]*\\br="${address}")[^>]*?(?:\\/>|>[\\s\\S]*?<\\/c>)`
+  ))?.[0];
+  assert.ok(cell, `${sheetName}必须包含 ${address}`);
+  return cell.match(/\bs="(\d+)"/)?.[1] ?? null;
 }
 
 function getDefinedNameNodes(workbookXml, name) {
@@ -380,7 +451,15 @@ const noJuneMonthEndBalanceSources = {
   ...sources,
   rollingMeasurementPath: createRollingSourceWithoutJuneMonthEndBalance(sources.rollingMeasurementPath)
 };
+const templateBudget = readBudgetSheet(templatePath);
+assert.equal(templateBudget.C2.f ?? null, null, '1 月期初流动资金必须保留期初基准值');
+OPENING_CASH_FORMULAS.forEach(([address, formula]) => {
+  assert.equal(templateBudget[address].f, formula, `资金滚动预算模板 ${address} 必须使用连续期初流动资金公式`);
+});
 const customNamedBasePath = createCustomNamedBaseWorkbook();
+const historicalInputSnapshot = Object.fromEntries(
+  ['C', 'D', 'E', 'F', 'G'].map((column) => [column, snapshotCells(readBudgetSheet(customNamedBasePath), column)])
+);
 const legacyDetailBasePath = createLegacyDetailBaseWorkbook();
 const legacyHistoryRows = getWorksheetDataRows(legacyDetailBasePath, LEGACY_DETAIL_SHEET).slice(1);
 
@@ -526,6 +605,28 @@ assert.ok(
 
 const juneBudget = readBudgetSheet(junePath);
 assertBudgetSourceNotesRemoved(junePath);
+FORWARD_OPENING_CASH_FORMULAS.forEach(([address, formula]) => {
+  assert.equal(juneBudget[address].f, formula, `生成表格 ${address} 必须补齐连续期初流动资金公式`);
+});
+assert.equal(juneBudget.H2.f, 'G39', '所选月份期初流动资金必须引用上月扣投资后流动');
+assert.equal(juneBudget.H2.z, juneBudget.C2.z, '期初流动资金公式必须保留数值格式');
+['C', 'D', 'E', 'F', 'G'].forEach((column) => {
+  assert.deepEqual(
+    snapshotCells(juneBudget, column),
+    historicalInputSnapshot[column],
+    `${column} 列历史数据不得在更新 6 月时被修改`
+  );
+});
+assert.equal(
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'I2'),
+  getWorksheetCellStyleIndex(customNamedBasePath, '2026年资金滚动预算', 'H2'),
+  '原预算表缺少 I2 时，期初流动资金公式必须继承原表样式'
+);
+assert.equal(
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'N2'),
+  getWorksheetCellStyleIndex(templatePath, '2026年资金滚动预算', 'N2'),
+  '原预算表样式兼容时，缺失的 12 月期初流动资金公式必须保留模板右侧边框样式'
+);
 assert.equal(juneBudget.H4.v, 1234.5678, '可转债期初余额必须从元换算为万元');
 assert.equal(juneBudget.H5.v, 3456.789, '定增期初余额必须从元换算为万元');
 assert.equal(juneBudget.H26.v, 2345.6789, '可转债期末余额必须从元换算为万元');
@@ -565,6 +666,8 @@ assert.deepEqual(
 );
 assert.equal(julyBudget.I4.v, 1234.5678, '7 月应写入转换后的可转债期初余额');
 assert.equal(julyBudget.I5.v, 3456.789, '7 月应写入转换后的定增期初余额');
+assert.equal(julyBudget.I2.f, 'H39', '下月期初流动资金必须引用本月扣投资后流动');
+assert.equal(julyBudget.I2.z, julyBudget.C2.z, '下月期初流动资金公式必须保留数值格式');
 assert.equal(julyBudget.I41.f, '4000.75-I38', '7 月第 41 行应使用当月集团国内部分月末资金余额');
 assert.equal(julyBudget.I41.z, julyBudget.C41.z, '7 月第 41 行必须沿用模板数值格式');
 assert.deepEqual(getCommentReferences(julyPath), ['H13', 'H20', 'H22', 'I13', 'I20', 'I22']);
