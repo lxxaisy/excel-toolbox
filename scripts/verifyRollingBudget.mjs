@@ -11,6 +11,7 @@ const workspaceRoot = path.resolve(import.meta.dirname, '..');
 const templatePath = path.join(workspaceRoot, 'vba', '资金滚动预算模板.xlsx');
 const verifyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'rolling-budget-verify-'));
 const LEGACY_DETAIL_SHEET = '外采账务明细';
+const EXTERNAL_PURCHASE_SUMMARY_SHEET = '外采汇总';
 const OPENING_CASH_FORMULAS = [
   ['D2', 'C39'],
   ['E2', 'D39'],
@@ -182,12 +183,19 @@ function getCommentNodes(filePath, references) {
   ]));
 }
 
-function assertWorkbookSheetRelationships(filePath) {
+function assertWorkbookSheetRelationships(
+  filePath,
+  expectedSheetNames = ['2026年资金滚动预算', '生成后 外采账务明细']
+) {
   const zip = new AdmZip(filePath);
   const workbookXml = zip.readAsText('xl/workbook.xml');
   const relationshipsXml = zip.readAsText('xl/_rels/workbook.xml.rels');
   const sheets = Array.from(workbookXml.matchAll(/<sheet\b[^>]*\br:id="([^"]+)"[^>]*\/>/g));
-  assert.equal(sheets.length, 2, '输出工作簿只能保留两个目标工作表');
+  assert.deepEqual(
+    sheets.map(([tag]) => tag.match(/\bname="([^"]+)"/)?.[1]),
+    expectedSheetNames,
+    '输出工作簿工作表名称和顺序不正确'
+  );
 
   sheets.forEach(([, relationshipId]) => {
     const target = relationshipsXml.match(new RegExp(
@@ -355,6 +363,160 @@ function createLegacyDetailBaseWorkbook() {
   return outputPath;
 }
 
+function createExternalPurchaseSummaryBaseWorkbook() {
+  const outputPath = path.join(verifyDirectory, 'budget-with-external-purchase-summary.xlsx');
+  const zip = new AdmZip(templatePath);
+  const detailPart = getSheetPart(zip, '生成后 外采账务明细');
+  const detailRelationshipsEntry = path.posix.join(
+    path.posix.dirname(detailPart),
+    '_rels',
+    `${path.posix.basename(detailPart)}.rels`
+  );
+  const summaryWorksheetEntry = 'xl/worksheets/sheet6.xml';
+  const summaryRelationshipsEntry = 'xl/worksheets/_rels/sheet6.xml.rels';
+  const tableEntry = 'xl/tables/table1.xml';
+  const relevantCacheEntry = 'xl/pivotCache/pivotCacheDefinition1.xml';
+  const tableCacheEntry = 'xl/pivotCache/pivotCacheDefinition2.xml';
+  const unrelatedCacheEntry = 'xl/pivotCache/pivotCacheDefinition3.xml';
+  const summaryUnrelatedCacheEntry = 'xl/pivotCache/pivotCacheDefinition4.xml';
+  const namedRangeCacheEntry = 'xl/pivotCache/pivotCacheDefinition5.xml';
+  const summaryPivotTableEntry = 'xl/pivotTables/pivotTable1.xml';
+  const summaryTablePivotTableEntry = 'xl/pivotTables/pivotTable2.xml';
+  const unrelatedSummaryPivotTableEntry = 'xl/pivotTables/pivotTable3.xml';
+  const namedRangeSummaryPivotTableEntry = 'xl/pivotTables/pivotTable4.xml';
+
+  assert.equal(zip.getEntry(summaryWorksheetEntry), null, '测试模板不得预置外采汇总工作表');
+  assert.equal(zip.getEntry(detailRelationshipsEntry), null, '测试模板不得预置外采明细表关系');
+  clearDetailHistory(zip, '生成后 外采账务明细');
+
+  let workbookXml = zip.readAsText('xl/workbook.xml');
+  const summarySheetTag = `<sheet name="${EXTERNAL_PURCHASE_SUMMARY_SHEET}" sheetId="9" r:id="rId9"/>`;
+  const customNames = [
+    `<definedName name="SummaryGlobalName">'${EXTERNAL_PURCHASE_SUMMARY_SHEET}'!$A$1</definedName>`,
+    `<definedName name="SummaryLocalName" localSheetId="5">'${EXTERNAL_PURCHASE_SUMMARY_SHEET}'!$A$1</definedName>`,
+    `<definedName name="_xlnm._FilterDatabase" localSheetId="5" hidden="1">'${EXTERNAL_PURCHASE_SUMMARY_SHEET}'!$A$1:$B$2</definedName>`,
+    '<definedName name="ExternalPurchaseNamedRange">\'生成后 外采账务明细\'!$A$1:$H$1</definedName>'
+  ].join('');
+  const pivotCaches = [
+    '<pivotCaches>',
+    '<pivotCache cacheId="1" r:id="rId10"/>',
+    '<pivotCache cacheId="2" r:id="rId11"/>',
+    '<pivotCache cacheId="3" r:id="rId12"/>',
+    '<pivotCache cacheId="4" r:id="rId13"/>',
+    '<pivotCache cacheId="5" r:id="rId14"/>',
+    '</pivotCaches>'
+  ].join('');
+  workbookXml = workbookXml.replace('</sheets>', `${summarySheetTag}</sheets>`);
+  workbookXml = workbookXml.replace(/<definedNames>[\s\S]*?<\/definedNames>/, (node) => (
+    node.replace('</definedNames>', `${customNames}</definedNames>`)
+  ));
+  workbookXml = workbookXml.replace('<calcPr', `${pivotCaches}<calcPr`);
+  zip.updateFile('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+
+  let workbookRelationshipsXml = zip.readAsText('xl/_rels/workbook.xml.rels');
+  workbookRelationshipsXml = workbookRelationshipsXml.replace('</Relationships>', [
+    '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet6.xml"/>',
+    '<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/>',
+    '<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition2.xml"/>',
+    '<Relationship Id="rId12" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition3.xml"/>',
+    '<Relationship Id="rId13" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition4.xml"/>',
+    '<Relationship Id="rId14" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition5.xml"/>',
+    '</Relationships>'
+  ].join(''));
+  zip.updateFile('xl/_rels/workbook.xml.rels', Buffer.from(workbookRelationshipsXml, 'utf8'));
+
+  let contentTypesXml = zip.readAsText('[Content_Types].xml');
+  contentTypesXml = contentTypesXml.replace('</Types>', [
+    '<Override PartName="/xl/worksheets/sheet6.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>',
+    '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>',
+    '<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>',
+    '<Override PartName="/xl/pivotTables/pivotTable2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>',
+    '<Override PartName="/xl/pivotTables/pivotTable3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>',
+    '<Override PartName="/xl/pivotTables/pivotTable4.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>',
+    '<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>',
+    '<Override PartName="/xl/pivotCache/pivotCacheDefinition2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>',
+    '<Override PartName="/xl/pivotCache/pivotCacheDefinition3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>',
+    '<Override PartName="/xl/pivotCache/pivotCacheDefinition4.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>',
+    '<Override PartName="/xl/pivotCache/pivotCacheDefinition5.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>',
+    '</Types>'
+  ].join(''));
+  zip.updateFile('[Content_Types].xml', Buffer.from(contentTypesXml, 'utf8'));
+
+  let detailXml = zip.readAsText(detailPart);
+  detailXml = detailXml.replace(
+    '</worksheet>',
+    '<tableParts count="1"><tablePart r:id="rId1"/></tableParts></worksheet>'
+  );
+  zip.updateFile(detailPart, Buffer.from(detailXml, 'utf8'));
+  zip.addFile(detailRelationshipsEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/></Relationships>',
+    'utf8'
+  ));
+  zip.addFile(tableEntry, Buffer.from([
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="ExternalPurchaseDetail" displayName="ExternalPurchaseDetail" ref="A1:H1" headerRowCount="1">',
+    '<autoFilter ref="A1:H1"/>',
+    '<tableColumns count="8"><tableColumn id="1" name="期间"/><tableColumn id="2" name="公司"/><tableColumn id="3" name="业务类型"/><tableColumn id="4" name="凭证号"/><tableColumn id="5" name="摘要"/><tableColumn id="6" name="对方科目"/><tableColumn id="7" name="金额"/><tableColumn id="8" name="备注1"/></tableColumns>',
+    '<tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>',
+    '</table>'
+  ].join(''), 'utf8'));
+
+  let summaryXml = zip.readAsText('xl/worksheets/sheet2.xml');
+  summaryXml = summaryXml.replace(
+    '</worksheet>',
+    '<pivotTableParts count="4"><pivotTablePart r:id="rId1"/><pivotTablePart r:id="rId2"/><pivotTablePart r:id="rId3"/><pivotTablePart r:id="rId4"/></pivotTableParts></worksheet>'
+  );
+  zip.addFile(summaryWorksheetEntry, Buffer.from(summaryXml, 'utf8'));
+  zip.addFile(summaryRelationshipsEntry, Buffer.from([
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/>',
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable2.xml"/>',
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable3.xml"/>',
+    '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable4.xml"/>',
+    '</Relationships>'
+  ].join(''), 'utf8'));
+  zip.addFile(summaryPivotTableEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="外采汇总范围透视" cacheId="1" refreshDataOnOpen="0"/>',
+    'utf8'
+  ));
+  zip.addFile(summaryTablePivotTableEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="外采汇总表格透视" cacheId="2" refreshDataOnOpen="0"/>',
+    'utf8'
+  ));
+  zip.addFile(unrelatedSummaryPivotTableEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="外采汇总其他透视" cacheId="4" refreshDataOnOpen="0"/>',
+    'utf8'
+  ));
+  zip.addFile(namedRangeSummaryPivotTableEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="外采汇总命名区域透视" cacheId="5" refreshDataOnOpen="0"/>',
+    'utf8'
+  ));
+  zip.addFile(relevantCacheEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="0" enableRefresh="0"><cacheSource type="worksheet"><worksheetSource ref="A1:H1" sheet="生成后 外采账务明细"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>',
+    'utf8'
+  ));
+  zip.addFile(tableCacheEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="0" enableRefresh="0"><cacheSource type="worksheet"><worksheetSource name="ExternalPurchaseDetail"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>',
+    'utf8'
+  ));
+  zip.addFile(unrelatedCacheEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="0" enableRefresh="0"><cacheSource type="worksheet"><worksheetSource ref="A1:H77" sheet="生成后 外采账务明细"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>',
+    'utf8'
+  ));
+  zip.addFile(summaryUnrelatedCacheEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="0" enableRefresh="0"><cacheSource type="worksheet"><worksheetSource ref="A1:Q41" sheet="2026年资金滚动预算"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>',
+    'utf8'
+  ));
+  zip.addFile(namedRangeCacheEntry, Buffer.from(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="0" enableRefresh="0"><cacheSource type="worksheet"><worksheetSource name="ExternalPurchaseNamedRange"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>',
+    'utf8'
+  ));
+
+  fs.writeFileSync(outputPath, zip.toBuffer());
+  return outputPath;
+}
+
 function getWorkbookXml(filePath) {
   return new AdmZip(filePath).readAsText('xl/workbook.xml');
 }
@@ -478,6 +640,179 @@ const sameMonthDetailZip = new AdmZip(sameMonthDetailPath);
 assert.match(
   sameMonthDetailZip.readAsText(getSheetPart(sameMonthDetailZip, '生成后 外采账务明细')),
   /<autoFilter ref="A1:H2"\/>/
+);
+
+const externalPurchaseSummaryBasePath = createExternalPurchaseSummaryBaseWorkbook();
+const externalPurchaseSummaryBaseZip = new AdmZip(externalPurchaseSummaryBasePath);
+const externalPurchaseSummaryPart = getSheetPart(
+  externalPurchaseSummaryBaseZip,
+  EXTERNAL_PURCHASE_SUMMARY_SHEET
+);
+const externalPurchaseSummaryRelationshipsEntry = path.posix.join(
+  path.posix.dirname(externalPurchaseSummaryPart),
+  '_rels',
+  `${path.posix.basename(externalPurchaseSummaryPart)}.rels`
+);
+const externalPurchaseSummaryXmlSnapshot = externalPurchaseSummaryBaseZip.readAsText(
+  externalPurchaseSummaryPart
+);
+const externalPurchaseSummaryRelationshipsSnapshot = externalPurchaseSummaryBaseZip.readAsText(
+  externalPurchaseSummaryRelationshipsEntry
+);
+const externalPurchaseSummaryJunePath = path.join(
+  verifyDirectory,
+  'budget-june-with-external-purchase-summary.xlsx'
+);
+fs.writeFileSync(externalPurchaseSummaryJunePath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: externalPurchaseSummaryBasePath,
+  templatePath,
+  ...sources
+}));
+const externalPurchaseSummaryWorkbook = XLSX.readFile(externalPurchaseSummaryJunePath, {
+  cellFormula: true,
+  cellStyles: true
+});
+assert.deepEqual(
+  externalPurchaseSummaryWorkbook.SheetNames,
+  ['2026年资金滚动预算', '生成后 外采账务明细', EXTERNAL_PURCHASE_SUMMARY_SHEET],
+  '上传原表中的外采汇总必须作为第三个工作表保留'
+);
+assertWorkbookSheetRelationships(externalPurchaseSummaryJunePath, [
+  '2026年资金滚动预算',
+  '生成后 外采账务明细',
+  EXTERNAL_PURCHASE_SUMMARY_SHEET
+]);
+const externalPurchaseSummaryOutputZip = new AdmZip(externalPurchaseSummaryJunePath);
+assert.equal(
+  externalPurchaseSummaryOutputZip.readAsText(
+    getSheetPart(externalPurchaseSummaryOutputZip, EXTERNAL_PURCHASE_SUMMARY_SHEET)
+  ),
+  externalPurchaseSummaryXmlSnapshot,
+  '外采汇总工作表 XML 必须原样保留'
+);
+assert.equal(
+  externalPurchaseSummaryOutputZip.readAsText(externalPurchaseSummaryRelationshipsEntry),
+  externalPurchaseSummaryRelationshipsSnapshot,
+  '外采汇总的 PivotTable 工作表关系必须原样保留'
+);
+const externalPurchaseSummaryWorkbookXml = getWorkbookXml(externalPurchaseSummaryJunePath);
+assert.ok(
+  getDefinedNameNode(externalPurchaseSummaryWorkbookXml, 'SummaryGlobalName'),
+  '外采汇总全局命名区域必须保留'
+);
+assert.match(
+  getDefinedNameNode(externalPurchaseSummaryWorkbookXml, 'SummaryLocalName'),
+  /\blocalSheetId="2"/,
+  '外采汇总局部命名区域必须重映射到第三个工作表'
+);
+assert.ok(
+  getDefinedNameNodes(externalPurchaseSummaryWorkbookXml, '_xlnm._FilterDatabase').some((node) => (
+    /\blocalSheetId="2"/.test(node) && node.includes(`'${EXTERNAL_PURCHASE_SUMMARY_SHEET}'!$A$1:$B$2`)
+  )),
+  '外采汇总筛选命名区域必须保留并重映射'
+);
+assert.match(
+  getDefinedNameNode(externalPurchaseSummaryWorkbookXml, 'ExternalPurchaseNamedRange'),
+  /'生成后 外采账务明细'!\$A\$1:\$H\$2/,
+  '命名区域型透视源必须扩展到新增外采明细'
+);
+const externalPurchaseSummaryAppXml = externalPurchaseSummaryOutputZip.readAsText('docProps/app.xml');
+assert.match(
+  externalPurchaseSummaryAppXml,
+  /<TitlesOfParts><vt:vector size="3" baseType="lpstr">[\s\S]*?<vt:lpstr>外采汇总<\/vt:lpstr>[\s\S]*?<\/vt:vector><\/TitlesOfParts>/,
+  '工作簿元数据必须包含外采汇总'
+);
+const relevantPivotCacheXml = externalPurchaseSummaryOutputZip.readAsText(
+  'xl/pivotCache/pivotCacheDefinition1.xml'
+);
+assert.match(relevantPivotCacheXml, /<worksheetSource\b(?=[^>]*\bref="A1:H2")(?=[^>]*\bsheet="生成后 外采账务明细")[^>]*\/>/);
+assert.match(relevantPivotCacheXml, /<pivotCacheDefinition\b(?=[^>]*\brefreshOnLoad="1")(?=[^>]*\benableRefresh="1")[^>]*>/);
+const tableSourcePivotCacheXml = externalPurchaseSummaryOutputZip.readAsText(
+  'xl/pivotCache/pivotCacheDefinition2.xml'
+);
+assert.match(tableSourcePivotCacheXml, /<worksheetSource\b(?=[^>]*\bname="ExternalPurchaseDetail")[^>]*\/>/);
+assert.match(tableSourcePivotCacheXml, /<pivotCacheDefinition\b(?=[^>]*\brefreshOnLoad="1")(?=[^>]*\benableRefresh="1")[^>]*>/);
+const externalPurchaseDetailTableXml = externalPurchaseSummaryOutputZip.readAsText('xl/tables/table1.xml');
+assert.match(externalPurchaseDetailTableXml, /<table\b(?=[^>]*\bref="A1:H2")[^>]*>/);
+assert.match(externalPurchaseDetailTableXml, /<autoFilter ref="A1:H2"\/>/);
+const namedRangeSourcePivotCacheXml = externalPurchaseSummaryOutputZip.readAsText(
+  'xl/pivotCache/pivotCacheDefinition5.xml'
+);
+assert.match(namedRangeSourcePivotCacheXml, /<worksheetSource\b(?=[^>]*\bname="ExternalPurchaseNamedRange")[^>]*\/>/);
+assert.match(namedRangeSourcePivotCacheXml, /<pivotCacheDefinition\b(?=[^>]*\brefreshOnLoad="1")(?=[^>]*\benableRefresh="1")[^>]*>/);
+const unrelatedPivotCacheXml = externalPurchaseSummaryOutputZip.readAsText(
+  'xl/pivotCache/pivotCacheDefinition3.xml'
+);
+assert.match(unrelatedPivotCacheXml, /<worksheetSource\b(?=[^>]*\bref="A1:H77")(?=[^>]*\bsheet="生成后 外采账务明细")[^>]*\/>/);
+assert.match(unrelatedPivotCacheXml, /<pivotCacheDefinition\b(?=[^>]*\brefreshOnLoad="0")(?=[^>]*\benableRefresh="0")[^>]*>/);
+const unrelatedSummaryPivotCacheXml = externalPurchaseSummaryOutputZip.readAsText(
+  'xl/pivotCache/pivotCacheDefinition4.xml'
+);
+assert.match(unrelatedSummaryPivotCacheXml, /<worksheetSource\b(?=[^>]*\bref="A1:Q41")(?=[^>]*\bsheet="2026年资金滚动预算")[^>]*\/>/);
+assert.match(unrelatedSummaryPivotCacheXml, /<pivotCacheDefinition\b(?=[^>]*\brefreshOnLoad="0")(?=[^>]*\benableRefresh="0")[^>]*>/);
+assert.match(
+  externalPurchaseSummaryOutputZip.readAsText('xl/pivotTables/pivotTable1.xml'),
+  /<pivotTableDefinition\b(?=[^>]*\bcacheId="1")(?=[^>]*\brefreshDataOnOpen="1")[^>]*>/,
+  '范围型外采汇总透视表必须在打开时刷新'
+);
+assert.match(
+  externalPurchaseSummaryOutputZip.readAsText('xl/pivotTables/pivotTable2.xml'),
+  /<pivotTableDefinition\b(?=[^>]*\bcacheId="2")(?=[^>]*\brefreshDataOnOpen="1")[^>]*>/,
+  '表格型外采汇总透视表必须在打开时刷新'
+);
+assert.match(
+  externalPurchaseSummaryOutputZip.readAsText('xl/pivotTables/pivotTable4.xml'),
+  /<pivotTableDefinition\b(?=[^>]*\bcacheId="5")(?=[^>]*\brefreshDataOnOpen="1")[^>]*>/,
+  '命名区域型外采汇总透视表必须在打开时刷新'
+);
+assert.match(
+  externalPurchaseSummaryOutputZip.readAsText('xl/pivotTables/pivotTable3.xml'),
+  /<pivotTableDefinition\b(?=[^>]*\bcacheId="4")(?=[^>]*\brefreshDataOnOpen="0")[^>]*>/,
+  '不依赖外采明细的汇总透视表不得被修改'
+);
+const externalPurchaseSummaryJulyPath = path.join(
+  verifyDirectory,
+  'budget-july-with-external-purchase-summary.xlsx'
+);
+fs.writeFileSync(externalPurchaseSummaryJulyPath, await generateRollingBudget({
+  updatePeriod: '2026-07',
+  budgetWorkbookPath: externalPurchaseSummaryJunePath,
+  templatePath,
+  ...sources
+}));
+assertWorkbookSheetRelationships(externalPurchaseSummaryJulyPath, [
+  '2026年资金滚动预算',
+  '生成后 外采账务明细',
+  EXTERNAL_PURCHASE_SUMMARY_SHEET
+]);
+const externalPurchaseSummaryJulyZip = new AdmZip(externalPurchaseSummaryJulyPath);
+assert.equal(
+  externalPurchaseSummaryJulyZip.readAsText(
+    getSheetPart(externalPurchaseSummaryJulyZip, EXTERNAL_PURCHASE_SUMMARY_SHEET)
+  ),
+  externalPurchaseSummaryXmlSnapshot,
+  '连续生成时外采汇总工作表 XML 必须持续保留'
+);
+assert.match(
+  externalPurchaseSummaryJulyZip.readAsText('xl/pivotCache/pivotCacheDefinition1.xml'),
+  /<worksheetSource\b(?=[^>]*\bref="A1:H3")(?=[^>]*\bsheet="生成后 外采账务明细")[^>]*\/>/,
+  '连续生成时范围型透视源必须扩展到 7 月追加的外采明细'
+);
+assert.match(
+  externalPurchaseSummaryJulyZip.readAsText('xl/tables/table1.xml'),
+  /<table\b(?=[^>]*\bref="A1:H3")[^>]*>/,
+  '连续生成时表格型透视源必须扩展到 7 月追加的外采明细'
+);
+assert.match(
+  getDefinedNameNode(getWorkbookXml(externalPurchaseSummaryJulyPath), 'ExternalPurchaseNamedRange'),
+  /'生成后 外采账务明细'!\$A\$1:\$H\$3/,
+  '连续生成时命名区域型透视源必须扩展到 7 月追加的外采明细'
+);
+assert.match(
+  externalPurchaseSummaryJulyZip.readAsText('xl/pivotCache/pivotCacheDefinition3.xml'),
+  /<worksheetSource\b(?=[^>]*\bref="A1:H77")(?=[^>]*\bsheet="生成后 外采账务明细")[^>]*\/>/,
+  '连续生成时不属于外采汇总的透视缓存不得被修改'
 );
 
 const legacyJunePath = path.join(verifyDirectory, 'budget-june-appended-to-may-details.xlsx');

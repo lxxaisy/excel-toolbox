@@ -8,6 +8,7 @@ const XLSX = XLSXModule?.default ?? XLSXModule;
 const TEMPLATE_BUDGET_SHEET = '2026年资金滚动预算';
 const TEMPLATE_DETAIL_SHEET = '生成后 外采账务明细';
 const ORIGINAL_DETAIL_SHEET_NAMES = [TEMPLATE_DETAIL_SHEET, '外采账务明细'];
+const EXTERNAL_PURCHASE_SUMMARY_SHEET = '外采汇总';
 const TEMPLATE_COMPANY_MAPPING_SHEET = 'Sheet3';
 const ROLLING_SHEET = '2026年滚动资金测算表';
 const BANK_SHEET = '银行流水';
@@ -1093,6 +1094,15 @@ function resolveWorkbookSheetParts(zip, label, detailSheetNames = [TEMPLATE_DETA
     return resolveSheet(matches[0]);
   };
 
+  const resolveOptionalSheet = (sheetName) => {
+    const matches = sheetEntries.filter((sheet) => sheet.name === sheetName);
+    if (matches.length > 1) {
+      throw new Error(`${label}不能包含多个工作表“${sheetName}”`);
+    }
+
+    return matches.length ? resolveSheet(matches[0]) : null;
+  };
+
   const worksheetRelationships = relationships
     .filter((relationship) => relationship.type?.endsWith('/worksheet') && relationship.target)
     .map((relationship) => ({
@@ -1105,14 +1115,19 @@ function resolveWorkbookSheetParts(zip, label, detailSheetNames = [TEMPLATE_DETA
 
   const budget = resolveRequiredSheet(TEMPLATE_BUDGET_SHEET);
   const detail = resolveRequiredOneOfSheets(detailSheetNames);
+  const summary = resolveOptionalSheet(EXTERNAL_PURCHASE_SUMMARY_SHEET);
+  const retainedSheets = [budget, detail, ...(summary ? [summary] : [])];
+  const retainedRelationshipIds = new Set(retainedSheets.map((sheet) => sheet.relationshipId));
 
   return {
     workbookEntry,
     workbookRelsEntry,
     budget,
     detail,
+    summary,
+    retainedSheets,
     removedSheetNames: sheetEntries
-      .filter((sheet) => sheet.name !== budget.name && sheet.name !== detail.name)
+      .filter((sheet) => !retainedRelationshipIds.has(sheet.relationshipId))
       .map((sheet) => sheet.name),
     worksheetRelationships
   };
@@ -1265,7 +1280,7 @@ function updateDynamicComments(zip, budgetPart, comments, targetColumn, template
 }
 
 function retainOutputSheetParts(zip, parts) {
-  const retainedRelationshipIds = new Set([parts.budget.relationshipId, parts.detail.relationshipId]);
+  const retainedRelationshipIds = new Set(parts.retainedSheets.map((sheet) => sheet.relationshipId));
   const removedRelationships = parts.worksheetRelationships.filter((relationship) => (
     !retainedRelationshipIds.has(relationship.id)
   ));
@@ -1302,18 +1317,24 @@ function getDefinedNameTag(node) {
   return node.match(/^<definedName\b[^>]*>/)?.[0] ?? null;
 }
 
+function referencesSheet(definedNameNode, sheetName) {
+  const quotedName = escapeRegExp(sheetName.replace(/'/g, "''"));
+  const unquotedName = escapeRegExp(sheetName);
+  return new RegExp(`(?:'${quotedName}'|${unquotedName})!`).test(definedNameNode);
+}
+
 function referencesRemovedSheet(definedNameNode, removedSheetNames) {
-  return removedSheetNames.some((sheetName) => {
-    const quotedName = escapeRegExp(sheetName.replace(/'/g, "''"));
-    const unquotedName = escapeRegExp(sheetName);
-    return new RegExp(`(?:'${quotedName}'|${unquotedName})!`).test(definedNameNode);
-  });
+  return removedSheetNames.some((sheetName) => referencesSheet(definedNameNode, sheetName));
 }
 
 function rebuildDefinedNames(workbookXml, parts, detailLastRow) {
   const filterName = '_xlnm._FilterDatabase';
   const detailSheetName = escapeXml(parts.detail.name.replace(/'/g, "''"));
-  const filterNode = `<definedName name="${filterName}" localSheetId="1" hidden="1">'${detailSheetName}'!$A$1:$H$${detailLastRow}</definedName>`;
+  const detailOutputSheetIndex = parts.retainedSheets.indexOf(parts.detail);
+  const outputSheetIndexByOriginalIndex = new Map(
+    parts.retainedSheets.map((sheet, outputSheetIndex) => [sheet.sheetIndex, outputSheetIndex])
+  );
+  const filterNode = `<definedName name="${filterName}" localSheetId="${detailOutputSheetIndex}" hidden="1">'${detailSheetName}'!$A$1:$H$${detailLastRow}</definedName>`;
   const definedNamesNode = workbookXml.match(/<definedNames\b[^>]*>[\s\S]*?<\/definedNames>/)?.[0];
   const currentNames = definedNamesNode
     ? Array.from(definedNamesNode.matchAll(/<definedName\b[^>]*?(?:\/>|>[\s\S]*?<\/definedName>)/g)).map(([node]) => node)
@@ -1331,15 +1352,10 @@ function rebuildDefinedNames(workbookXml, parts, detailLastRow) {
       return [node];
     }
 
-    if (Number(localSheetId) === parts.budget.sheetIndex) {
+    const outputSheetIndex = outputSheetIndexByOriginalIndex.get(Number(localSheetId));
+    if (outputSheetIndex !== undefined) {
       return [node.replace(/^<definedName\b[^>]*>/, (currentTag) => (
-        setXmlAttribute(currentTag, 'localSheetId', '0')
-      ))];
-    }
-
-    if (Number(localSheetId) === parts.detail.sheetIndex) {
-      return [node.replace(/^<definedName\b[^>]*>/, (currentTag) => (
-        setXmlAttribute(currentTag, 'localSheetId', '1')
+        setXmlAttribute(currentTag, 'localSheetId', String(outputSheetIndex))
       ))];
     }
 
@@ -1364,7 +1380,7 @@ function rebuildDefinedNames(workbookXml, parts, detailLastRow) {
 
 function updateWorkbookMetadata(zip, parts, detailLastRow) {
   let workbookXml = zip.readAsText(parts.workbookEntry);
-  const sheetsXml = `<sheets>${parts.budget.tag}${parts.detail.tag}</sheets>`;
+  const sheetsXml = `<sheets>${parts.retainedSheets.map((sheet) => sheet.tag).join('')}</sheets>`;
   const calculationProperties = '<calcPr calcMode="auto" calcOnSave="true" calcCompleted="false" fullCalcOnLoad="true" forceFullCalc="true"/>';
 
   workbookXml = workbookXml.replace(/<sheets>[\s\S]*?<\/sheets>/, sheetsXml);
@@ -1386,16 +1402,251 @@ function updateWorkbookMetadata(zip, parts, detailLastRow) {
   const appEntry = 'docProps/app.xml';
   if (zip.getEntry(appEntry)) {
     let appXml = zip.readAsText(appEntry);
+    const outputSheetCount = parts.retainedSheets.length;
+    const titles = parts.retainedSheets
+      .map((sheet) => `<vt:lpstr>${escapeXml(sheet.name)}</vt:lpstr>`)
+      .join('');
     appXml = appXml.replace(
       /(<vt:lpstr>工作表<\/vt:lpstr><\/vt:variant><vt:variant><vt:i4>)\d+(<\/vt:i4>)/,
-      (matched, prefix, suffix) => `${prefix}2${suffix}`
+      (matched, prefix, suffix) => `${prefix}${outputSheetCount}${suffix}`
     );
     appXml = appXml.replace(
       /<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/,
-      `<TitlesOfParts><vt:vector size="2" baseType="lpstr"><vt:lpstr>${TEMPLATE_BUDGET_SHEET}</vt:lpstr><vt:lpstr>${escapeXml(parts.detail.name)}</vt:lpstr></vt:vector></TitlesOfParts>`
+      `<TitlesOfParts><vt:vector size="${outputSheetCount}" baseType="lpstr">${titles}</vt:vector></TitlesOfParts>`
     );
     zip.updateFile(appEntry, Buffer.from(appXml, 'utf8'));
   }
+}
+
+function getDetailPivotTableEntries(zip, detailPart) {
+  const entriesByName = new Map();
+  if (!zip.getEntry(detailPart.worksheetRelsEntry)) {
+    return entriesByName;
+  }
+
+  const relationships = parseRelationshipEntries(zip.readAsText(detailPart.worksheetRelsEntry));
+  relationships
+    .filter((relationship) => relationship.type?.endsWith('/table') && relationship.target)
+    .forEach((relationship) => {
+      const entry = resolveZipEntryPath(detailPart.worksheetEntry, relationship.target);
+      if (!zip.getEntry(entry)) {
+        return;
+      }
+
+      const tableTag = zip.readAsText(entry).match(/<table\b[^>]*>/)?.[0];
+      if (!tableTag) {
+        return;
+      }
+
+      [getXmlAttribute(tableTag, 'name'), getXmlAttribute(tableTag, 'displayName')]
+        .filter(Boolean)
+        .forEach((name) => entriesByName.set(name, entry));
+    });
+
+  return entriesByName;
+}
+
+function getDetailPivotNamedRangeNames(zip, parts) {
+  const workbookXml = zip.readAsText(parts.workbookEntry);
+  const definedNamesNode = workbookXml.match(/<definedNames\b[^>]*>[\s\S]*?<\/definedNames>/)?.[0];
+  if (!definedNamesNode) {
+    return new Set();
+  }
+
+  return new Set(
+    Array.from(definedNamesNode.matchAll(/<definedName\b[^>]*?(?:\/>|>[\s\S]*?<\/definedName>)/g))
+      .flatMap(([node]) => {
+        const name = getXmlAttribute(getDefinedNameTag(node) ?? '', 'name');
+        return name && referencesSheet(node, parts.detail.name) ? [name] : [];
+      })
+  );
+}
+
+function updateDetailPivotNamedRangeRanges(zip, parts, detailLastRow, pivotSourceNames) {
+  if (!pivotSourceNames.size) {
+    return;
+  }
+
+  let workbookXml = zip.readAsText(parts.workbookEntry);
+  const detailSheetName = escapeRegExp(parts.detail.name.replace(/'/g, "''"));
+  const directDetailRange = new RegExp(`((?:'${detailSheetName}'|${escapeRegExp(parts.detail.name)})!\\$A\\$1:\\$H\\$)\\d+`, 'g');
+  const nextWorkbookXml = workbookXml.replace(
+    /<definedName\b[^>]*?(?:\/>|>[\s\S]*?<\/definedName>)/g,
+    (node) => {
+      const name = getXmlAttribute(getDefinedNameTag(node) ?? '', 'name');
+      return name && pivotSourceNames.has(name)
+        ? node.replace(directDetailRange, `$1${detailLastRow}`)
+        : node;
+    }
+  );
+
+  if (nextWorkbookXml !== workbookXml) {
+    zip.updateFile(parts.workbookEntry, Buffer.from(nextWorkbookXml, 'utf8'));
+  }
+}
+
+function updateDetailPivotTableRanges(zip, tableEntriesByName, detailLastRow, pivotSourceNames) {
+  const detailRange = `A1:H${detailLastRow}`;
+  const tableEntries = new Set(
+    Array.from(pivotSourceNames)
+      .map((name) => tableEntriesByName.get(name))
+      .filter(Boolean)
+  );
+
+  tableEntries.forEach((entry) => {
+    let tableXml = zip.readAsText(entry);
+    const tableTag = tableXml.match(/<table\b[^>]*>/)?.[0];
+    if (!tableTag) {
+      return;
+    }
+
+    tableXml = tableXml.replace(tableTag, setXmlAttribute(tableTag, 'ref', detailRange));
+    tableXml = tableXml.replace(/<autoFilter\b[^>]*\/>/, (tag) => (
+      setXmlAttribute(tag, 'ref', detailRange)
+    ));
+    zip.updateFile(entry, Buffer.from(tableXml, 'utf8'));
+  });
+}
+
+function getSummaryPivotTableParts(zip, summaryPart) {
+  if (!zip.getEntry(summaryPart.worksheetRelsEntry)) {
+    return [];
+  }
+
+  const relationships = parseRelationshipEntries(zip.readAsText(summaryPart.worksheetRelsEntry));
+  return relationships
+    .filter((relationship) => relationship.type?.endsWith('/pivotTable') && relationship.target)
+    .flatMap((relationship) => {
+      const entry = resolveZipEntryPath(summaryPart.worksheetEntry, relationship.target);
+      if (!zip.getEntry(entry)) {
+        return [];
+      }
+
+      const definitionTag = zip.readAsText(entry).match(/<pivotTableDefinition\b[^>]*>/)?.[0];
+      const cacheId = definitionTag && getXmlAttribute(definitionTag, 'cacheId');
+      return definitionTag && cacheId !== null ? [{ entry, cacheId }] : [];
+    });
+}
+
+function getSummaryPivotCacheParts(zip, parts, cacheIds) {
+  if (!cacheIds.size) {
+    return [];
+  }
+
+  const workbookXml = zip.readAsText(parts.workbookEntry);
+  const relationships = parseRelationshipEntries(zip.readAsText(parts.workbookRelsEntry));
+  const relationshipsById = new Map(relationships.map((relationship) => [relationship.id, relationship]));
+  return Array.from(workbookXml.matchAll(/<pivotCache\b[^>]*\/>/g)).flatMap(([pivotCacheTag]) => {
+    const cacheId = getXmlAttribute(pivotCacheTag, 'cacheId');
+    const relationshipId = getXmlAttribute(pivotCacheTag, 'r:id');
+    const relationship = relationshipsById.get(relationshipId);
+    if (
+      cacheId === null
+      || !cacheIds.has(cacheId)
+      || !relationship?.type?.endsWith('/pivotCacheDefinition')
+      || !relationship.target
+    ) {
+      return [];
+    }
+
+    const entry = resolveZipEntryPath(parts.workbookEntry, relationship.target);
+    return zip.getEntry(entry) ? [{ entry, cacheId }] : [];
+  });
+}
+
+function updateExternalPurchaseSummaryPivotSources(zip, parts, detailLastRow) {
+  if (!parts.summary) {
+    return;
+  }
+
+  const summaryPivotTables = getSummaryPivotTableParts(zip, parts.summary);
+  const summaryCacheIds = new Set(summaryPivotTables.map((pivotTable) => pivotTable.cacheId));
+  const detailTableEntriesByName = getDetailPivotTableEntries(zip, parts.detail);
+  const detailNamedRangeNames = getDetailPivotNamedRangeNames(zip, parts);
+  const detailRange = `A1:H${detailLastRow}`;
+  const detailTableSourceNames = new Set();
+  const detailNamedRangeSourceNames = new Set();
+  const refreshedCacheIds = new Set();
+
+  getSummaryPivotCacheParts(zip, parts, summaryCacheIds).forEach(({ entry, cacheId }) => {
+    let pivotCacheXml = zip.readAsText(entry);
+    let referencesDetail = false;
+    pivotCacheXml = pivotCacheXml.replace(
+      /<worksheetSource\b[^>]*(?:\/>|>[\s\S]*?<\/worksheetSource>)/g,
+      (worksheetSource) => {
+        const sourceTag = worksheetSource.match(/^<worksheetSource\b[^>]*>/)?.[0];
+        if (!sourceTag) {
+          return worksheetSource;
+        }
+
+        const sourceName = getXmlAttribute(sourceTag, 'name');
+        const referencesDetailSheet = getXmlAttribute(sourceTag, 'sheet') === parts.detail.name;
+        const referencesDetailTable = sourceName && detailTableEntriesByName.has(sourceName);
+        const referencesDetailNamedRange = sourceName && detailNamedRangeNames.has(sourceName);
+        if (!referencesDetailSheet && !referencesDetailTable && !referencesDetailNamedRange) {
+          return worksheetSource;
+        }
+
+        referencesDetail = true;
+        if (referencesDetailTable) {
+          detailTableSourceNames.add(sourceName);
+        }
+        if (referencesDetailNamedRange) {
+          detailNamedRangeSourceNames.add(sourceName);
+        }
+        return referencesDetailSheet
+          ? worksheetSource.replace(sourceTag, setXmlAttribute(sourceTag, 'ref', detailRange))
+          : worksheetSource;
+      }
+    );
+
+    if (!referencesDetail) {
+      return;
+    }
+
+    const definitionTag = pivotCacheXml.match(/<pivotCacheDefinition\b[^>]*>/)?.[0];
+    if (definitionTag) {
+      pivotCacheXml = pivotCacheXml.replace(
+        definitionTag,
+        setXmlAttribute(
+          setXmlAttribute(definitionTag, 'refreshOnLoad', '1'),
+          'enableRefresh',
+          '1'
+        )
+      );
+    }
+    refreshedCacheIds.add(cacheId);
+    zip.updateFile(entry, Buffer.from(pivotCacheXml, 'utf8'));
+  });
+
+  updateDetailPivotTableRanges(
+    zip,
+    detailTableEntriesByName,
+    detailLastRow,
+    detailTableSourceNames
+  );
+  updateDetailPivotNamedRangeRanges(
+    zip,
+    parts,
+    detailLastRow,
+    detailNamedRangeSourceNames
+  );
+
+  summaryPivotTables
+    .filter((pivotTable) => refreshedCacheIds.has(pivotTable.cacheId))
+    .forEach(({ entry }) => {
+      let pivotTableXml = zip.readAsText(entry);
+      const definitionTag = pivotTableXml.match(/<pivotTableDefinition\b[^>]*>/)?.[0];
+      if (!definitionTag) {
+        return;
+      }
+
+      pivotTableXml = pivotTableXml.replace(
+        definitionTag,
+        setXmlAttribute(definitionTag, 'refreshDataOnOpen', '1')
+      );
+      zip.updateFile(entry, Buffer.from(pivotTableXml, 'utf8'));
+    });
 }
 
 function hasCompatibleWorkbookStyles(zip, templateZip) {
@@ -1478,6 +1729,7 @@ function buildBudgetWorkbookOutput(
     templateZip,
     templateParts.budget
   );
+  updateExternalPurchaseSummaryPivotSources(zip, parts, detailResult.lastRow);
   retainOutputSheetParts(zip, parts);
   updateWorkbookMetadata(zip, parts, detailResult.lastRow);
 
