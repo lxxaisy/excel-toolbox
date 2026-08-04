@@ -73,11 +73,11 @@ const OTHER_EXPENSE_LABELS = [
   ROLLING_LABELS.tenderDeposit
 ];
 
-const INVESTMENT_LABELS = [
-  ROLLING_LABELS.investmentCashReceipt,
-  ROLLING_LABELS.nonOperatingOtherReceipt,
-  ROLLING_LABELS.nonOperatingSpecialExpense,
-  ROLLING_LABELS.dividendReceipt
+const INVESTMENT_RULES = [
+  { label: ROLLING_LABELS.investmentCashReceipt, multiplier: -1, commentOrder: 0 },
+  { label: ROLLING_LABELS.nonOperatingOtherReceipt, multiplier: -1, commentOrder: 1 },
+  { label: ROLLING_LABELS.nonOperatingSpecialExpense, multiplier: 1, commentOrder: 3 },
+  { label: ROLLING_LABELS.dividendReceipt, multiplier: -1, commentOrder: 2 }
 ];
 
 const EXCLUDED_EXTERNAL_PURCHASE_COMPANIES = [
@@ -103,11 +103,16 @@ const LOAN_DRAW_REMARK = '17-取得贷款';
 const LOAN_REPAYMENT_REMARK = '25-归还贷款';
 const EXTERNAL_PURCHASE_LEDGER_SUFFIX = '-新致财务账簿';
 const DOMESTIC_ROLLING_SECTION = '集团国内部分';
+const MONTH_START_CASH_BALANCE_LABEL = '月初资金余额';
 const MONTH_END_CASH_BALANCE_LABEL = '月末资金余额';
+const OPENING_CURRENT_AND_NONCURRENT_CASH_LABEL = '期初流动+非流动资金';
 const POST_INVESTMENT_CASH_LABEL = '扣投资后流动+非流动';
 const OPENING_CASH_LABEL = '期初流动资金';
 const OPENING_CASH_SOURCE_LABEL = '扣投资后流动';
-const CASH_BALANCE_CHECK_ROW = 41;
+const INVESTMENT_CASH_LABEL = '投资款';
+const OPENING_CASH_BALANCE_CHECK_ROW = 41;
+const CLOSING_CASH_BALANCE_CHECK_ROW = 42;
+const BUDGET_OUTPUT_END_ROW = 42;
 const SOURCE_NOTE_START_ROW = 45;
 const SOURCE_NOTE_END_ROW = 49;
 const BALANCE_OPENING_COLUMN = 5;
@@ -247,7 +252,7 @@ function findMonthActualColumn(sheet, month) {
   throw new Error(`滚动资金测算表缺少${monthLabel}的“实际”列`);
 }
 
-function findDomesticMonthEndBalanceRow(sheet) {
+function findDomesticCashBalanceRow(sheet, cashBalanceLabel) {
   const range = getSheetRange(sheet, '滚动资金测算表');
   const domesticSectionRow = findExactValueRow(
     sheet,
@@ -261,12 +266,12 @@ function findDomesticMonthEndBalanceRow(sheet) {
       break;
     }
 
-    if (getCellText(sheet, rowIndex, 1) === MONTH_END_CASH_BALANCE_LABEL) {
+    if (getCellText(sheet, rowIndex, 1) === cashBalanceLabel) {
       return rowIndex;
     }
   }
 
-  throw new Error(`滚动资金测算表“${DOMESTIC_ROLLING_SECTION}”缺少项目“${MONTH_END_CASH_BALANCE_LABEL}”`);
+  throw new Error(`滚动资金测算表“${DOMESTIC_ROLLING_SECTION}”缺少项目“${cashBalanceLabel}”`);
 }
 
 function readRollingSource(sheet, month) {
@@ -281,14 +286,16 @@ function readRollingSource(sheet, month) {
     const rowIndex = findExactValueRow(sheet, 3, label, '滚动资金测算表');
     values.set(label, parseNumber(getCellValue(sheet, rowIndex, actualColumn), `滚动资金测算表 ${label}`));
   });
-  const monthEndBalanceRow = findDomesticMonthEndBalanceRow(sheet);
-  values.set(
-    MONTH_END_CASH_BALANCE_LABEL,
-    parseNumber(
-      getCellValue(sheet, monthEndBalanceRow, actualColumn),
-      `滚动资金测算表 ${DOMESTIC_ROLLING_SECTION} ${MONTH_END_CASH_BALANCE_LABEL}`
-    )
-  );
+  [MONTH_START_CASH_BALANCE_LABEL, MONTH_END_CASH_BALANCE_LABEL].forEach((cashBalanceLabel) => {
+    const cashBalanceRow = findDomesticCashBalanceRow(sheet, cashBalanceLabel);
+    values.set(
+      cashBalanceLabel,
+      parseNumber(
+        getCellValue(sheet, cashBalanceRow, actualColumn),
+        `滚动资金测算表 ${DOMESTIC_ROLLING_SECTION} ${cashBalanceLabel}`
+      )
+    );
+  });
 
   return values;
 }
@@ -593,6 +600,21 @@ function buildOtherExpenseComment(rollingValues, details) {
   ].join('\n');
 }
 
+function getInvestmentValue(value, multiplier) {
+  return value === null || value === undefined ? value : value * multiplier;
+}
+
+function buildInvestmentComment(rollingValues) {
+  const lines = INVESTMENT_RULES
+    .filter((rule) => rollingValues.get(rule.label) !== null && rollingValues.get(rule.label) !== undefined)
+    .sort((left, right) => left.commentOrder - right.commentOrder)
+    .map((rule) => (
+      `${rule.label} ${formatLoanWan(getInvestmentValue(rollingValues.get(rule.label), rule.multiplier))}万`
+    ));
+
+  return lines.length ? ['时瑜：', ...lines].join('\n') : null;
+}
+
 function extractLoanName(summary, prefix) {
   const startIndex = summary.indexOf(prefix);
   if (startIndex === -1) {
@@ -645,6 +667,14 @@ function collectSourceNoteUpdates(sheet) {
 
   for (let rowIndex = 0; rowIndex < 49; rowIndex += 1) {
     const value = getCellValue(sheet, rowIndex, 15);
+    if (getCellText(sheet, rowIndex, 1) === INVESTMENT_CASH_LABEL) {
+      updates.set(
+        XLSX.utils.encode_cell({ r: rowIndex, c: 15 }),
+        'D列（所选月份“实际”列）：吸收投资收到的现金【取负数】+其他收款-非经营性【取负数】+特殊支出-非经营性+收到分配股利【取负数】'
+      );
+      continue;
+    }
+
     if (typeof value === 'string' && value.includes('B列')) {
       updates.set(
         XLSX.utils.encode_cell({ r: rowIndex, c: 15 }),
@@ -662,6 +692,10 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
   const addressForRow = (rowNumber) => `${targetColumn}${rowNumber}`;
   const values = new Map();
   const formulas = new Map();
+  const labels = new Map([
+    ['B41', '期初余额（check）'],
+    ['B42', '期末余额（check）']
+  ]);
   const comments = new Map();
   const openingCashFormulaAddresses = new Set();
   const openingCashRow = findBudgetRowByLabel(sheet, OPENING_CASH_LABEL);
@@ -697,20 +731,36 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
   );
   values.set(
     addressForRow(34),
-    sumPresent(INVESTMENT_LABELS.map((label) => rollingValues.get(label)))
+    sumPresent(INVESTMENT_RULES.map((rule) => (
+      getInvestmentValue(rollingValues.get(rule.label), rule.multiplier)
+    )))
   );
   values.set(addressForRow(4), convertibleBond.opening);
   values.set(addressForRow(5), privatePlacement.opening);
   values.set(addressForRow(26), convertibleBond.closing);
   values.set(addressForRow(27), privatePlacement.closing);
 
+  const monthStartCashBalance = rollingValues.get(MONTH_START_CASH_BALANCE_LABEL);
+  if (monthStartCashBalance === null || monthStartCashBalance === undefined) {
+    values.set(addressForRow(OPENING_CASH_BALANCE_CHECK_ROW), null);
+  } else {
+    const openingCurrentAndNonCurrentCashRow = findBudgetRowByLabel(
+      sheet,
+      OPENING_CURRENT_AND_NONCURRENT_CASH_LABEL
+    );
+    formulas.set(
+      addressForRow(OPENING_CASH_BALANCE_CHECK_ROW),
+      `${monthStartCashBalance}-${addressForRow(openingCurrentAndNonCurrentCashRow)}`
+    );
+  }
+
   const monthEndCashBalance = rollingValues.get(MONTH_END_CASH_BALANCE_LABEL);
   if (monthEndCashBalance === null || monthEndCashBalance === undefined) {
-    values.set(addressForRow(CASH_BALANCE_CHECK_ROW), null);
+    values.set(addressForRow(CLOSING_CASH_BALANCE_CHECK_ROW), null);
   } else {
     const postInvestmentCashRow = findBudgetRowByLabel(sheet, POST_INVESTMENT_CASH_LABEL);
     formulas.set(
-      addressForRow(CASH_BALANCE_CHECK_ROW),
+      addressForRow(CLOSING_CASH_BALANCE_CHECK_ROW),
       `${monthEndCashBalance}-${addressForRow(postInvestmentCashRow)}`
     );
   }
@@ -723,6 +773,11 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
       addressForRow(13),
       buildOtherExpenseComment(rollingValues, details.externalPurchaseDetails)
     );
+  }
+
+  const investmentComment = buildInvestmentComment(rollingValues);
+  if (investmentComment) {
+    comments.set(addressForRow(34), investmentComment);
   }
 
   const loanDrawComment = buildLoanComment(
@@ -750,6 +805,7 @@ function buildBudgetChanges(sheet, updatePeriod, rollingValues, convertibleBond,
     targetColumnIndex,
     values,
     formulas,
+    labels,
     openingCashFormulaAddresses,
     sourceNotes: collectSourceNoteUpdates(sheet),
     comments
@@ -788,6 +844,25 @@ function getPreviousCellInRow(xml, address) {
 function getXmlRowNode(xml, rowNumber) {
   const pattern = new RegExp(`<row\\b[^>]*\\br="${rowNumber}"[^>]*>[\\s\\S]*?<\\/row>`);
   return xml.match(pattern)?.[0] ?? null;
+}
+
+function getXmlCellColumnIndex(cellXml) {
+  const cellTag = cellXml.match(/^<c\b[^>]*>/)?.[0] ?? '';
+  const address = getXmlAttribute(cellTag, 'r');
+  return address ? XLSX.utils.decode_cell(address).c : null;
+}
+
+function insertCellIntoXmlRow(rowXml, address, nextCell) {
+  const targetColumnIndex = XLSX.utils.decode_cell(address).c;
+  const cells = rowXml.match(/<c\b[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g) ?? [];
+  const nextExistingCell = cells.find((cell) => {
+    const columnIndex = getXmlCellColumnIndex(cell);
+    return columnIndex !== null && columnIndex > targetColumnIndex;
+  });
+
+  return nextExistingCell
+    ? rowXml.replace(nextExistingCell, `${nextCell}${nextExistingCell}`)
+    : rowXml.replace(/<\/row>$/, `${nextCell}</row>`);
 }
 
 function removeXmlAttribute(tag, name) {
@@ -831,6 +906,25 @@ function buildCellXml(address, value, valueType, existingCell, styleReferenceCel
   return `${tag}<is><t${spaceAttribute}>${escapeXml(text).replace(/\n/g, '&#10;')}</t></is></c>`;
 }
 
+function ensureXmlRow(sheetXml, rowNumber) {
+  if (getXmlRowNode(sheetXml, rowNumber)) {
+    return sheetXml;
+  }
+
+  const sheetData = sheetXml.match(/<sheetData>[\s\S]*?<\/sheetData>/)?.[0];
+  if (!sheetData) {
+    throw new Error('预算表缺少工作表数据');
+  }
+
+  const newRow = `<row r="${rowNumber}"></row>`;
+  const nextRow = getXmlRows(sheetData).find((row) => row.rowNumber > rowNumber);
+  const nextSheetData = nextRow
+    ? sheetData.replace(nextRow.rowXml, `${newRow}${nextRow.rowXml}`)
+    : sheetData.replace('</sheetData>', `${newRow}</sheetData>`);
+
+  return sheetXml.replace(sheetData, nextSheetData);
+}
+
 function replaceCellXml(
   sheetXml,
   address,
@@ -849,12 +943,13 @@ function replaceCellXml(
   }
 
   const rowNumber = Number(address.match(/\d+$/)?.[0]);
-  const row = getXmlRowNode(sheetXml, rowNumber);
+  const nextSheetXml = ensureXmlRow(sheetXml, rowNumber);
+  const row = getXmlRowNode(nextSheetXml, rowNumber);
   if (!row) {
     throw new Error(`预算表缺少单元格所在行：${address}`);
   }
 
-  return sheetXml.replace(row, row.replace(/<\/row>$/, `${nextCell}</row>`));
+  return nextSheetXml.replace(row, insertCellIntoXmlRow(row, address, nextCell));
 }
 
 function removeBudgetSourceNoteRows(sheetXml) {
@@ -867,7 +962,7 @@ function removeBudgetSourceNoteRows(sheetXml) {
 
   return sheetXml.replace(
     /<dimension\b[^>]*\bref="[^"]*"[^>]*\/>/,
-    (dimension) => setXmlAttribute(dimension, 'ref', 'A1:Q41')
+    (dimension) => setXmlAttribute(dimension, 'ref', `A1:Q${BUDGET_OUTPUT_END_ROW}`)
   );
 }
 
@@ -1003,23 +1098,132 @@ function buildDynamicCommentTextXml(text) {
   return `<text><r><rPr><b/><sz val="9"/><rFont val="宋体"/><charset val="134"/></rPr><t>${escapeXml(prefix)}</t></r>${bodyNode}</text>`;
 }
 
-function moveVmlCommentShape(shape, sourceColumn, targetColumn) {
-  const columnOffset = targetColumn - sourceColumn;
-  const movedAnchor = shape.replace(/<x:Anchor>([^<]+)<\/x:Anchor>/, (matched, anchor) => {
-    const coordinates = anchor.split(',').map((value) => Number(value));
-    if (coordinates.length !== 8 || coordinates.some((value) => Number.isNaN(value))) {
-      return matched;
-    }
+function getVmlAnchorCoordinates(shape) {
+  const anchor = shape.match(/<x:Anchor>([^<]+)<\/x:Anchor>/)?.[1];
+  const coordinates = anchor?.split(',').map((value) => Number(value));
+  return coordinates?.length === 8 && coordinates.every((value) => Number.isFinite(value))
+    ? coordinates
+    : null;
+}
 
-    coordinates[0] += columnOffset;
-    coordinates[4] += columnOffset;
-    return `<x:Anchor>${coordinates.join(',')}</x:Anchor>`;
+function getNumericXmlAttribute(tag, name) {
+  const value = getXmlAttribute(tag, name);
+  return value === null ? null : Number(value);
+}
+
+function getWorksheetDefaultRowHeight(sheetXml) {
+  const sheetFormat = sheetXml.match(/<sheetFormatPr\b[^>]*>/)?.[0] ?? '';
+  const defaultRowHeight = getNumericXmlAttribute(sheetFormat, 'defaultRowHeight');
+  return Number.isFinite(defaultRowHeight) ? defaultRowHeight : 15;
+}
+
+function getWorksheetRowHeight(sheetXml, rowIndex, defaultRowHeight) {
+  const rowTag = sheetXml.match(new RegExp(`<row\\b(?=[^>]*\\br="${rowIndex + 1}")[^>]*>`))?.[0] ?? '';
+  const rowHeight = getNumericXmlAttribute(rowTag, 'ht');
+  return Number.isFinite(rowHeight) ? rowHeight : defaultRowHeight;
+}
+
+function getWorksheetDefaultColumnWidth(sheetXml) {
+  const sheetFormat = sheetXml.match(/<sheetFormatPr\b[^>]*>/)?.[0] ?? '';
+  const defaultColumnWidth = getNumericXmlAttribute(sheetFormat, 'defaultColWidth');
+  return Number.isFinite(defaultColumnWidth) ? defaultColumnWidth : 8.43;
+}
+
+function getWorksheetColumnWidth(sheetXml, columnIndex, defaultColumnWidth) {
+  const columns = sheetXml.match(/<col\b[^>]*\/>/g) ?? [];
+  const match = columns.find((column) => {
+    const minimum = Number(getXmlAttribute(column, 'min')) - 1;
+    const maximum = Number(getXmlAttribute(column, 'max')) - 1;
+    return columnIndex >= minimum && columnIndex <= maximum;
   });
+  const columnWidth = getNumericXmlAttribute(match ?? '', 'width');
+  return Number.isFinite(columnWidth) ? columnWidth : defaultColumnWidth;
+}
 
-  return movedAnchor.replace(
-    new RegExp(`<x:Column>${sourceColumn}<\\/x:Column>`),
-    `<x:Column>${targetColumn}</x:Column>`
+function excelColumnWidthToPoints(columnWidth) {
+  return Math.floor(((256 * columnWidth + Math.floor(128 / 7)) / 256) * 7) * 0.75;
+}
+
+function getVmlAnchorPosition(sheetXml, coordinates) {
+  const defaultRowHeight = getWorksheetDefaultRowHeight(sheetXml);
+  const defaultColumnWidth = getWorksheetDefaultColumnWidth(sheetXml);
+  const [columnIndex, columnOffset, rowIndex, rowOffset] = coordinates;
+  let left = 0;
+  let top = 0;
+
+  for (let index = 0; index < columnIndex; index += 1) {
+    left += excelColumnWidthToPoints(getWorksheetColumnWidth(sheetXml, index, defaultColumnWidth));
+  }
+  left += excelColumnWidthToPoints(
+    getWorksheetColumnWidth(sheetXml, columnIndex, defaultColumnWidth)
+  ) * (columnOffset / 1024);
+
+  for (let index = 0; index < rowIndex; index += 1) {
+    top += getWorksheetRowHeight(sheetXml, index, defaultRowHeight);
+  }
+  top += getWorksheetRowHeight(sheetXml, rowIndex, defaultRowHeight) * (rowOffset / 256);
+
+  return { left, top };
+}
+
+function formatVmlPoint(value) {
+  return String(Math.round(value * 10000) / 10000);
+}
+
+function offsetVmlStylePoint(style, property, offset) {
+  if (!offset) {
+    return style;
+  }
+
+  return style.replace(
+    new RegExp(`(${property}:)(-?\\d+(?:\\.\\d+)?)pt`),
+    (matched, prefix, value) => `${prefix}${formatVmlPoint(Number(value) + offset)}pt`
   );
+}
+
+function moveVmlCommentShapeStyle(shape, sheetXml, sourceAnchor, targetAnchor) {
+  const sourcePosition = getVmlAnchorPosition(sheetXml, sourceAnchor);
+  const targetPosition = getVmlAnchorPosition(sheetXml, targetAnchor);
+  const leftOffset = targetPosition.left - sourcePosition.left;
+  const topOffset = targetPosition.top - sourcePosition.top;
+
+  return shape.replace(/style="([^"]+)"/, (matched, style) => (
+    `style="${offsetVmlStylePoint(
+      offsetVmlStylePoint(style, 'margin-left', leftOffset),
+      'margin-top',
+      topOffset
+    )}"`
+  ));
+}
+
+function moveVmlCommentShape(shape, sourceColumn, targetColumn, sourceRow, targetRow, sheetXml) {
+  const columnOffset = targetColumn - sourceColumn;
+  const rowOffset = targetRow - sourceRow;
+  const sourceAnchor = getVmlAnchorCoordinates(shape);
+  const targetAnchor = sourceAnchor ? [...sourceAnchor] : null;
+  if (targetAnchor) {
+    targetAnchor[0] += columnOffset;
+    targetAnchor[4] += columnOffset;
+    targetAnchor[2] += rowOffset;
+    targetAnchor[6] += rowOffset;
+  }
+
+  const movedAnchor = targetAnchor
+    ? shape.replace(/<x:Anchor>[^<]+<\/x:Anchor>/, `<x:Anchor>${targetAnchor.join(',')}</x:Anchor>`)
+    : shape;
+  const movedShape = sourceAnchor && targetAnchor && sheetXml
+    ? moveVmlCommentShapeStyle(movedAnchor, sheetXml, sourceAnchor, targetAnchor)
+    : movedAnchor;
+
+  return movedShape
+    .replace(
+      new RegExp(`<x:Column>${sourceColumn}<\\/x:Column>`),
+      `<x:Column>${targetColumn}</x:Column>`
+    )
+    .replace(
+      new RegExp(`<x:Row>${sourceRow - 1}<\\/x:Row>`),
+      `<x:Row>${targetRow - 1}</x:Row>`
+    );
 }
 
 function escapeRegExp(value) {
@@ -1212,18 +1416,26 @@ function setCommentAuthorId(commentNode, authorId) {
   return commentNode.replace(/^<comment\b[^>]*>/, (tag) => setXmlAttribute(tag, 'authorId', String(authorId)));
 }
 
-function findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, preferredColumn) {
+function findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, preferredColumn, fallbackRowNumbers = []) {
   const columns = [
     preferredColumn,
     ...Array.from({ length: 12 }, (_, index) => index + 2).filter((columnIndex) => columnIndex !== preferredColumn)
   ];
 
-  for (const columnIndex of columns) {
-    const address = `${XLSX.utils.encode_col(columnIndex)}${rowNumber}`;
-    const commentNode = getCommentNode(commentsXml, address);
-    const shape = getVmlCommentShape(vmlXml, rowNumber - 1, columnIndex);
-    if (commentNode && shape) {
-      return { commentNode, shape, sourceColumn: columnIndex, sourceCommentsXml: commentsXml };
+  for (const sourceRow of [rowNumber, ...fallbackRowNumbers]) {
+    for (const columnIndex of columns) {
+      const address = `${XLSX.utils.encode_col(columnIndex)}${sourceRow}`;
+      const commentNode = getCommentNode(commentsXml, address);
+      const shape = getVmlCommentShape(vmlXml, sourceRow - 1, columnIndex);
+      if (commentNode && shape) {
+        return {
+          commentNode,
+          shape,
+          sourceColumn: columnIndex,
+          sourceRow,
+          sourceCommentsXml: commentsXml
+        };
+      }
     }
   }
 
@@ -1245,7 +1457,15 @@ function assignNextVmlShapeId(vmlXml, shape) {
   return shape.replace(/\bid="_x0000_s\d+"/, `id="_x0000_s${nextId}"`);
 }
 
-function updateDynamicComments(zip, budgetPart, comments, targetColumn, templateZip, templateBudgetPart) {
+function updateDynamicComments(
+  zip,
+  budgetPart,
+  comments,
+  targetColumn,
+  templateZip,
+  templateBudgetPart,
+  budgetSheetXml
+) {
   const commentParts = resolveBudgetCommentParts(zip, budgetPart, '原预算表');
   const templateCommentParts = resolveBudgetCommentParts(templateZip, templateBudgetPart, '资金滚动预算模板');
   let commentsXml = zip.readAsText(commentParts.commentsEntry);
@@ -1253,15 +1473,16 @@ function updateDynamicComments(zip, budgetPart, comments, targetColumn, template
   const templateCommentsXml = templateZip.readAsText(templateCommentParts.commentsEntry);
   const templateVmlXml = templateZip.readAsText(templateCommentParts.vmlEntry);
 
-  [13, 20, 22].forEach((rowNumber) => {
+  [13, 20, 22, 34].forEach((rowNumber) => {
     const address = `${XLSX.utils.encode_col(targetColumn)}${rowNumber}`;
     const text = comments.get(address);
     let seed = null;
     let authorId = null;
 
     if (text !== null && text !== undefined) {
-      seed = findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, targetColumn)
-        || findDynamicCommentSeed(templateCommentsXml, templateVmlXml, rowNumber, 7);
+      const fallbackRowNumbers = rowNumber === 34 ? [13, 20, 22] : [];
+      seed = findDynamicCommentSeed(commentsXml, vmlXml, rowNumber, targetColumn, fallbackRowNumbers)
+        || findDynamicCommentSeed(templateCommentsXml, templateVmlXml, rowNumber, 7, fallbackRowNumbers);
       if (!seed) {
         throw new Error(`资金滚动预算模板缺少动态批注位置：${address}`);
       }
@@ -1287,7 +1508,14 @@ function updateDynamicComments(zip, budgetPart, comments, targetColumn, template
 
       const nextShape = assignNextVmlShapeId(
         vmlXml,
-        moveVmlCommentShape(seed.shape, seed.sourceColumn, targetColumn)
+        moveVmlCommentShape(
+          seed.shape,
+          seed.sourceColumn,
+          targetColumn,
+          seed.sourceRow,
+          rowNumber,
+          budgetSheetXml
+        )
       );
       vmlXml = vmlXml.replace(/<\/xml>$/, `${nextShape}</xml>`);
     }
@@ -1698,7 +1926,14 @@ function buildBudgetWorkbookOutput(
   const compatibleBudgetStyleSource = hasCompatibleWorkbookStyles(zip, templateZip)
     ? templateZip.readAsText(templateParts.budget.worksheetEntry)
     : null;
-  const cashBalanceCheckAddress = `${XLSX.utils.encode_col(budgetChanges.targetColumnIndex)}${CASH_BALANCE_CHECK_ROW}`;
+  const cashBalanceCheckAddresses = new Set([
+    `${XLSX.utils.encode_col(budgetChanges.targetColumnIndex)}${OPENING_CASH_BALANCE_CHECK_ROW}`,
+    `${XLSX.utils.encode_col(budgetChanges.targetColumnIndex)}${CLOSING_CASH_BALANCE_CHECK_ROW}`
+  ]);
+
+  budgetChanges.labels.forEach((value, address) => {
+    budgetXml = replaceCellXml(budgetXml, address, value, 'string', 'B40');
+  });
 
   budgetChanges.values.forEach((value, address) => {
     budgetXml = replaceCellXml(
@@ -1706,11 +1941,11 @@ function buildBudgetWorkbookOutput(
       address,
       value,
       'number',
-      address === cashBalanceCheckAddress ? 'C41' : address
+      cashBalanceCheckAddresses.has(address) ? 'C41' : address
     );
   });
   budgetChanges.formulas.forEach((formula, address) => {
-    const styleReferenceAddress = address === cashBalanceCheckAddress ? 'C41' : address;
+    const styleReferenceAddress = cashBalanceCheckAddresses.has(address) ? 'C41' : address;
     const fallbackStyleReferenceCell = budgetChanges.openingCashFormulaAddresses.has(address)
       ? compatibleBudgetStyleSource
         ? getXmlCellNode(compatibleBudgetStyleSource, address)
@@ -1745,7 +1980,8 @@ function buildBudgetWorkbookOutput(
     budgetChanges.comments,
     budgetChanges.targetColumnIndex,
     templateZip,
-    templateParts.budget
+    templateParts.budget,
+    budgetXml
   );
   updateExternalPurchaseSummaryPivotSources(zip, parts, detailResult.lastRow);
   retainOutputSheetParts(zip, parts);

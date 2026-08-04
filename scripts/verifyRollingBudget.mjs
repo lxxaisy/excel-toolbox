@@ -75,6 +75,10 @@ function createRollingSource() {
     rows[index + 3][4] = index + 1;
     rows[index + 3][5] = index + 101;
   });
+  rows[58] = [];
+  rows[58][1] = '月初资金余额';
+  rows[58][4] = 5000.25;
+  rows[58][5] = 6000.75;
   rows[59] = [];
   rows[59][1] = '月末资金余额';
   rows[59][4] = 3000.5;
@@ -94,6 +98,53 @@ function createRollingSourceWithoutJuneMonthEndBalance(sourcePath) {
   const workbook = XLSX.readFile(sourcePath, { cellFormula: true, cellStyles: true });
   delete workbook.Sheets['2026年滚动资金测算表'].E60;
   const outputPath = path.join(verifyDirectory, 'rolling-without-june-month-end-balance.xlsx');
+  XLSX.writeFile(workbook, outputPath, { bookType: 'xlsx' });
+  return outputPath;
+}
+
+function createRollingSourceWithoutJuneMonthStartBalance(sourcePath) {
+  const workbook = XLSX.readFile(sourcePath, { cellFormula: true, cellStyles: true });
+  delete workbook.Sheets['2026年滚动资金测算表'].E59;
+  const outputPath = path.join(verifyDirectory, 'rolling-without-june-month-start-balance.xlsx');
+  XLSX.writeFile(workbook, outputPath, { bookType: 'xlsx' });
+  return outputPath;
+}
+
+function createRollingSourceWithoutJuneInvestmentValues(sourcePath) {
+  const workbook = XLSX.readFile(sourcePath, { cellFormula: true, cellStyles: true });
+  const sheet = workbook.Sheets['2026年滚动资金测算表'];
+  const labels = new Set([
+    '吸收投资收到的现金',
+    '其他收款-非经营性',
+    '特殊支出-非经营性',
+    '收到分配股利'
+  ]);
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    if (labels.has(sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 3 })]?.v)) {
+      delete sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 4 })];
+    }
+  }
+
+  const outputPath = path.join(verifyDirectory, 'rolling-without-june-investment-values.xlsx');
+  XLSX.writeFile(workbook, outputPath, { bookType: 'xlsx' });
+  return outputPath;
+}
+
+function createRollingSourceWithZeroJuneDividend(sourcePath) {
+  const workbook = XLSX.readFile(sourcePath, { cellFormula: true, cellStyles: true });
+  const sheet = workbook.Sheets['2026年滚动资金测算表'];
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    if (sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 3 })]?.v === '收到分配股利') {
+      sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 4 })] = { t: 'n', v: 0 };
+      break;
+    }
+  }
+
+  const outputPath = path.join(verifyDirectory, 'rolling-with-zero-june-dividend.xlsx');
   XLSX.writeFile(workbook, outputPath, { bookType: 'xlsx' });
   return outputPath;
 }
@@ -174,7 +225,7 @@ function getBudgetCommentParts(zip) {
 function getCommentReferences(filePath) {
   const zip = new AdmZip(filePath);
   const comments = zip.readAsText(getBudgetCommentParts(zip).comments);
-  return ['H13', 'H20', 'H22', 'I13', 'I20', 'I22'].filter((reference) => (
+  return ['H13', 'H20', 'H22', 'H34', 'I13', 'I20', 'I22', 'I34'].filter((reference) => (
     new RegExp(`<comment\\b[^>]*\\bref="${reference}"`).test(comments)
   ));
 }
@@ -186,6 +237,21 @@ function getCommentNodes(filePath, references) {
     reference,
     comments.match(new RegExp(`<comment\\b[^>]*\\bref="${reference}"[^>]*>[\\s\\S]*?</comment>`))?.[0] ?? null
   ]));
+}
+
+function getVmlCommentShape(filePath, rowIndex, columnIndex) {
+  const zip = new AdmZip(filePath);
+  const vmlXml = zip.readAsText(getBudgetCommentParts(zip).vml);
+  return (vmlXml.match(/<v:shape\b[\s\S]*?<\/v:shape>/g) || []).find((shape) => (
+    shape.includes(`<x:Row>${rowIndex}</x:Row>`)
+    && shape.includes(`<x:Column>${columnIndex}</x:Column>`)
+  )) ?? null;
+}
+
+function getVmlStylePoint(shape, property) {
+  const style = shape?.match(/style="([^"]+)"/)?.[1] ?? '';
+  const value = style.match(new RegExp(`${property}:(-?\\d+(?:\\.\\d+)?)pt`))?.[1];
+  return value === undefined ? null : Number(value);
 }
 
 function assertWorkbookSheetRelationships(
@@ -587,7 +653,7 @@ function assertBudgetSourceNotesRemoved(filePath) {
       `预算表不得保留第 ${rowNumber} 行资料说明`
     );
   }
-  assert.match(budgetXml, /<dimension ref="A1:Q41"\/>/, '预算表有效范围应在资料说明删除后截止第 41 行');
+  assert.match(budgetXml, /<dimension ref="A1:Q42"\/>/, '预算表有效范围应在资料说明删除后截止第 42 行');
 }
 
 function snapshotCells(sheet, column) {
@@ -617,6 +683,18 @@ const noJuneExternalPurchaseSources = {
 const noJuneMonthEndBalanceSources = {
   ...sources,
   rollingMeasurementPath: createRollingSourceWithoutJuneMonthEndBalance(sources.rollingMeasurementPath)
+};
+const noJuneMonthStartBalanceSources = {
+  ...sources,
+  rollingMeasurementPath: createRollingSourceWithoutJuneMonthStartBalance(sources.rollingMeasurementPath)
+};
+const noJuneInvestmentSources = {
+  ...sources,
+  rollingMeasurementPath: createRollingSourceWithoutJuneInvestmentValues(sources.rollingMeasurementPath)
+};
+const zeroJuneDividendSources = {
+  ...sources,
+  rollingMeasurementPath: createRollingSourceWithZeroJuneDividend(sources.rollingMeasurementPath)
 };
 const flexibleLoanRepaymentSources = {
   ...sources,
@@ -1063,8 +1141,56 @@ assert.equal(juneBudget.H4.v, 1234.5678, '可转债期初余额必须从元换�
 assert.equal(juneBudget.H5.v, 3456.789, '定增期初余额必须从元换算为万元');
 assert.equal(juneBudget.H26.v, 2345.6789, '可转债期末余额必须从元换算为万元');
 assert.equal(juneBudget.H27.v, 4567.8901, '定增期末余额必须从元换算为万元');
-assert.equal(juneBudget.H41.f, '3000.5-H38', '第 41 行应使用集团国内部分的月末资金余额校验');
+assert.equal(juneBudget.H34.v, -42, '投资款必须按四项的新正负号规则写入');
+assert.equal(
+  juneBudget.P34.v,
+  'D列（所选月份“实际”列）：吸收投资收到的现金【取负数】+其他收款-非经营性【取负数】+特殊支出-非经营性+收到分配股利【取负数】',
+  '投资款来源说明必须同步更新为新正负号规则'
+);
+assert.equal(juneBudget.B41.v, '期初余额（check）', '第 41 行必须写入期初余额校验标签');
+assert.equal(juneBudget.B42.v, '期末余额（check）', '第 42 行必须写入期末余额校验标签');
+assert.equal(juneBudget.H41.f, '5000.25-H7', '第 41 行应使用集团国内部分的月初资金余额校验');
+assert.equal(juneBudget.H42.f, '3000.5-H38', '第 42 行应使用集团国内部分的月末资金余额校验');
 assert.equal(juneBudget.H41.z, juneBudget.C41.z, '第 41 行必须沿用模板数值格式');
+assert.equal(juneBudget.H42.z, juneBudget.C41.z, '第 42 行必须沿用第 41 行的数值格式');
+assert.equal(
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'B41'),
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'B40'),
+  '第 41 行标签必须沿用相邻标签样式'
+);
+assert.equal(
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'B42'),
+  getWorksheetCellStyleIndex(junePath, '2026年资金滚动预算', 'B40'),
+  '新增第 42 行标签必须沿用相邻标签样式'
+);
+const juneBudgetZip = new AdmZip(junePath);
+const juneBudgetXml = juneBudgetZip.readAsText(getSheetPart(juneBudgetZip, '2026年资金滚动预算'));
+const juneCheckRow = juneBudgetXml.match(/<row\b[^>]*\br="41"[^>]*>[\s\S]*?<\/row>/)?.[0] ?? '';
+assert.ok(
+  juneCheckRow.indexOf('r="B41"') < juneCheckRow.indexOf('r="C41"')
+    && juneCheckRow.indexOf('r="C41"') < juneCheckRow.indexOf('r="H41"'),
+  '新增单元格必须按列顺序写入工作表 XML'
+);
+const juneInvestmentComment = getCommentNodes(junePath, ['H34']).H34;
+assert.match(juneInvestmentComment, /吸收投资收到的现金 -20万/, '投资款批注必须展示取负数后的吸收投资金额');
+assert.match(juneInvestmentComment, /其他收款-非经营性 -21万/, '投资款批注必须展示取负数后的其他收款金额');
+assert.match(juneInvestmentComment, /收到分配股利 -23万/, '投资款批注必须展示取负数后的股利金额');
+assert.match(juneInvestmentComment, /特殊支出-非经营性 22万/, '投资款批注必须展示原方向的特殊支出金额');
+const juneCommentParts = getBudgetCommentParts(new AdmZip(junePath));
+const juneCommentVml = new AdmZip(junePath).readAsText(juneCommentParts.vml);
+assert.match(
+  juneCommentVml,
+  /<x:Row>33<\/x:Row><x:Column>7<\/x:Column>/,
+  '投资款批注的 VML 锚点必须定位到 H34'
+);
+const templateInvestmentCommentShape = getVmlCommentShape(templatePath, 12, 7);
+const juneInvestmentCommentShape = getVmlCommentShape(junePath, 33, 7);
+assert.ok(juneInvestmentCommentShape, '投资款批注必须包含对应的 VML 形状');
+assert.ok(
+  getVmlStylePoint(juneInvestmentCommentShape, 'margin-top')
+    > getVmlStylePoint(templateInvestmentCommentShape, 'margin-top'),
+  '投资款批注的 VML 垂直位置必须随目标行移动'
+);
 const juneDetail = XLSX.readFile(junePath, { cellFormula: true, cellStyles: true }).Sheets['生成后 外采账务明细'];
 assert.equal(juneDetail.B2.v, '测试流量公司', '外采明细 B 列必须去掉新致财务账簿尾缀');
 
@@ -1072,7 +1198,7 @@ const historicalSnapshot = Object.fromEntries(
   ['C', 'D', 'E', 'F', 'G'].map((column) => [column, snapshotCells(juneBudget, column)])
 );
 const juneSnapshot = snapshotCells(juneBudget, 'H');
-const juneCommentSnapshot = getCommentNodes(junePath, ['B12', 'B13', 'B25', 'B29', 'H13', 'H20', 'H22']);
+const juneCommentSnapshot = getCommentNodes(junePath, ['B12', 'B13', 'B25', 'B29', 'H13', 'H20', 'H22', 'H34']);
 const juneSheet2Path = moveDetailToSecondWorksheetPart(junePath);
 const juneSheet2NoCalcPath = removeCalculationProperties(juneSheet2Path);
 const julyPath = path.join(verifyDirectory, 'budget-july.xlsx');
@@ -1092,17 +1218,33 @@ assertBudgetSourceNotesRemoved(julyPath);
 });
 assert.deepEqual(snapshotCells(julyBudget, 'H'), juneSnapshot, '已生成的 6 月列不得在更新 7 月时被修改');
 assert.deepEqual(
-  getCommentNodes(julyPath, ['B12', 'B13', 'B25', 'B29', 'H13', 'H20', 'H22']),
+  getCommentNodes(julyPath, ['B12', 'B13', 'B25', 'B29', 'H13', 'H20', 'H22', 'H34']),
   juneCommentSnapshot,
   '历史月份批注不得被修改'
 );
 assert.equal(julyBudget.I4.v, 1234.5678, '7 月应写入转换后的可转债期初余额');
 assert.equal(julyBudget.I5.v, 3456.789, '7 月应写入转换后的定增期初余额');
+assert.equal(julyBudget.I34.v, -242, '7 月投资款必须继续按新正负号规则写入');
 assert.equal(julyBudget.I2.f, 'H39', '下月期初流动资金必须引用本月扣投资后流动');
 assert.equal(julyBudget.I2.z, julyBudget.C2.z, '下月期初流动资金公式必须保留数值格式');
-assert.equal(julyBudget.I41.f, '4000.75-I38', '7 月第 41 行应使用当月集团国内部分月末资金余额');
+assert.equal(julyBudget.I41.f, '6000.75-I7', '7 月第 41 行应使用当月集团国内部分月初资金余额');
+assert.equal(julyBudget.I42.f, '4000.75-I38', '7 月第 42 行应使用当月集团国内部分月末资金余额');
 assert.equal(julyBudget.I41.z, julyBudget.C41.z, '7 月第 41 行必须沿用模板数值格式');
-assert.deepEqual(getCommentReferences(julyPath), ['H13', 'H20', 'H22', 'I13', 'I20', 'I22']);
+assert.equal(julyBudget.I42.z, julyBudget.C41.z, '7 月第 42 行必须沿用第 41 行数值格式');
+assert.match(getCommentNodes(julyPath, ['I34']).I34, /吸收投资收到的现金 -120万/);
+const julyInvestmentCommentShape = getVmlCommentShape(julyPath, 33, 8);
+assert.ok(julyInvestmentCommentShape, '下月投资款批注必须包含对应的 VML 形状');
+assert.equal(
+  getVmlStylePoint(julyInvestmentCommentShape, 'margin-top'),
+  getVmlStylePoint(juneInvestmentCommentShape, 'margin-top'),
+  '同一行的下月投资款批注不得改变 VML 垂直位置'
+);
+assert.ok(
+  getVmlStylePoint(julyInvestmentCommentShape, 'margin-left')
+    > getVmlStylePoint(juneInvestmentCommentShape, 'margin-left'),
+  '下月投资款批注的 VML 水平位置必须随目标列移动'
+);
+assert.deepEqual(getCommentReferences(julyPath), ['H13', 'H20', 'H22', 'H34', 'I13', 'I20', 'I22', 'I34']);
 
 const julyZip = new AdmZip(julyPath);
 const budgetXml = julyZip.readAsText(getSheetPart(julyZip, '2026年资金滚动预算'));
@@ -1154,8 +1296,21 @@ fs.writeFileSync(noMonthEndBalancePath, await generateRollingBudget({
   ...noJuneMonthEndBalanceSources
 }));
 const noMonthEndBalanceBudget = readBudgetSheet(noMonthEndBalancePath);
-assert.equal(noMonthEndBalanceBudget.H41?.f ?? null, null, '月末资金余额为空时第 41 行不得写入公式');
-assert.equal(noMonthEndBalanceBudget.H41?.v ?? null, null, '月末资金余额为空时第 41 行必须保持空白');
+assert.equal(noMonthEndBalanceBudget.H41.f, '5000.25-H7', '月末资金余额为空不得影响第 41 行月初校验');
+assert.equal(noMonthEndBalanceBudget.H42?.f ?? null, null, '月末资金余额为空时第 42 行不得写入公式');
+assert.equal(noMonthEndBalanceBudget.H42?.v ?? null, null, '月末资金余额为空时第 42 行必须保持空白');
+
+const noMonthStartBalancePath = path.join(verifyDirectory, 'budget-june-without-month-start-balance.xlsx');
+fs.writeFileSync(noMonthStartBalancePath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: customNamedBasePath,
+  templatePath,
+  ...noJuneMonthStartBalanceSources
+}));
+const noMonthStartBalanceBudget = readBudgetSheet(noMonthStartBalancePath);
+assert.equal(noMonthStartBalanceBudget.H41?.f ?? null, null, '月初资金余额为空时第 41 行不得写入公式');
+assert.equal(noMonthStartBalanceBudget.H41?.v ?? null, null, '月初资金余额为空时第 41 行必须保持空白');
+assert.equal(noMonthStartBalanceBudget.H42.f, '3000.5-H38', '月初资金余额为空不得影响第 42 行月末校验');
 
 const clearedExistingCheckPath = path.join(verifyDirectory, 'budget-june-cleared-existing-check.xlsx');
 fs.writeFileSync(clearedExistingCheckPath, await generateRollingBudget({
@@ -1165,7 +1320,34 @@ fs.writeFileSync(clearedExistingCheckPath, await generateRollingBudget({
   ...noJuneMonthEndBalanceSources
 }));
 const clearedExistingCheckBudget = readBudgetSheet(clearedExistingCheckPath);
-assert.equal(clearedExistingCheckBudget.H41?.f ?? null, null, '空源值必须清除原表当月已有的校验公式');
-assert.equal(clearedExistingCheckBudget.H41?.v ?? null, null, '空源值必须清除原表当月已有的校验值');
+assert.equal(clearedExistingCheckBudget.H41.f, '5000.25-H7', '月末空值不得清除原表当月的月初校验公式');
+assert.equal(clearedExistingCheckBudget.H42?.f ?? null, null, '空源值必须清除原表当月已有的月末校验公式');
+assert.equal(clearedExistingCheckBudget.H42?.v ?? null, null, '空源值必须清除原表当月已有的月末校验值');
+
+const clearedExistingInvestmentPath = path.join(verifyDirectory, 'budget-june-cleared-existing-investment.xlsx');
+fs.writeFileSync(clearedExistingInvestmentPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: junePath,
+  templatePath,
+  ...noJuneInvestmentSources
+}));
+const clearedExistingInvestmentBudget = readBudgetSheet(clearedExistingInvestmentPath);
+assert.equal(clearedExistingInvestmentBudget.H34?.v ?? null, null, '投资款四项源值均为空时必须清除当期金额');
+assert.equal(getCommentNodes(clearedExistingInvestmentPath, ['H34']).H34, null, '投资款四项源值均为空时必须清除当期批注');
+
+const zeroDividendInvestmentPath = path.join(verifyDirectory, 'budget-june-with-zero-dividend.xlsx');
+fs.writeFileSync(zeroDividendInvestmentPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: customNamedBasePath,
+  templatePath,
+  ...zeroJuneDividendSources
+}));
+const zeroDividendInvestmentBudget = readBudgetSheet(zeroDividendInvestmentPath);
+assert.equal(zeroDividendInvestmentBudget.H34.v, -19, '投资款计算必须将 0 作为有效源值');
+assert.match(
+  getCommentNodes(zeroDividendInvestmentPath, ['H34']).H34,
+  /收到分配股利 0万/,
+  '投资款批注必须展示有效的 0 金额'
+);
 
 console.log(`rolling budget verification passed: ${verifyDirectory}`);
