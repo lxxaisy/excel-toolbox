@@ -98,14 +98,19 @@ function createRollingSourceWithoutJuneMonthEndBalance(sourcePath) {
   return outputPath;
 }
 
-function createBankSource({ includeJuneExternalPurchase = true, fileName = 'bank.xlsx' } = {}) {
+function createBankSource({
+  includeJuneExternalPurchase = true,
+  juneLoanRepaymentSummary = '归还贷款-测试银行（贷款归还）',
+  juneLoanRepaymentCredit = 2000000,
+  fileName = 'bank.xlsx'
+} = {}) {
   const rows = [
     ['2026年度', undefined, '核算账簿', '凭证号', '摘要', '对方科目', '借方', '贷方', '备注1'],
     ...(includeJuneExternalPurchase
       ? [[6, undefined, '测试流量公司-新致财务账簿', 'J-001', '外包费', '应付账款', 50000, undefined, '10-外包采购、原材料采购']]
       : []),
     [6, undefined, '测试银行', 'J-002', '贷款-测试银行（贷款提取）', '短期借款', 1000000, undefined, '17-取得贷款'],
-    [6, undefined, '测试银行', 'J-003', '归还贷款-测试银行（贷款归还）', '短期借款', undefined, 2000000, '25-归还贷款'],
+    [6, undefined, '测试银行', 'J-003', juneLoanRepaymentSummary, '短期借款', undefined, juneLoanRepaymentCredit, '25-归还贷款'],
     [7, undefined, '测试软件公司', 'J-004', '支付外包项目款', '应付账款', 60000, undefined, '10-外包采购、原材料采购'],
     [7, undefined, '测试银行', 'J-005', '贷款-测试银行（贷款提取）', '短期借款', 3000000, undefined, '17-取得贷款'],
     [7, undefined, '测试银行', 'J-006', '归还贷款-测试银行（贷款归还）', '短期借款', undefined, 4000000, '25-归还贷款']
@@ -613,6 +618,35 @@ const noJuneMonthEndBalanceSources = {
   ...sources,
   rollingMeasurementPath: createRollingSourceWithoutJuneMonthEndBalance(sources.rollingMeasurementPath)
 };
+const flexibleLoanRepaymentSources = {
+  ...sources,
+  bankTransactionPath: createBankSource({
+    juneLoanRepaymentSummary: '归还贷款本金及利息-中行0649（2026/3/21-2026/5/6，利率2.65%）',
+    fileName: 'bank-with-principal-and-interest-repayment.xlsx'
+  })
+};
+const hyphenatedLoanRepaymentSources = {
+  ...sources,
+  bankTransactionPath: createBankSource({
+    juneLoanRepaymentSummary: '归还贷款本金及利息-中行-0649（2026/3/21-2026/5/6，利率2.65%）',
+    fileName: 'bank-with-hyphenated-repayment-bank.xlsx'
+  })
+};
+const unseparatedLoanRepaymentSources = {
+  ...sources,
+  bankTransactionPath: createBankSource({
+    juneLoanRepaymentSummary: '归还贷款（2026/3/21-2026/5/6，利率2.65%）',
+    fileName: 'bank-with-unseparated-repayment.xlsx'
+  })
+};
+const missingLoanRepaymentCreditSources = {
+  ...sources,
+  bankTransactionPath: createBankSource({
+    juneLoanRepaymentSummary: '归还贷款本金及利息-中行0649（2026/3/21-2026/5/6，利率2.65%）',
+    juneLoanRepaymentCredit: null,
+    fileName: 'bank-without-repayment-credit.xlsx'
+  })
+};
 const templateBudget = readBudgetSheet(templatePath);
 assert.equal(templateBudget.C2.f ?? null, null, '1 月期初流动资金必须保留期初基准值');
 OPENING_CASH_FORMULAS.forEach(([address, formula]) => {
@@ -640,6 +674,69 @@ const sameMonthDetailZip = new AdmZip(sameMonthDetailPath);
 assert.match(
   sameMonthDetailZip.readAsText(getSheetPart(sameMonthDetailZip, '生成后 外采账务明细')),
   /<autoFilter ref="A1:H2"\/>/
+);
+
+const flexibleLoanRepaymentPath = path.join(
+  verifyDirectory,
+  'budget-june-with-principal-and-interest-repayment.xlsx'
+);
+fs.writeFileSync(flexibleLoanRepaymentPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: templatePath,
+  templatePath,
+  ...flexibleLoanRepaymentSources
+}));
+assert.match(
+  getCommentNodes(flexibleLoanRepaymentPath, ['H22']).H22,
+  /中行0649 200万/,
+  '归还贷款本金及利息摘要必须生成贷款归还批注'
+);
+assert.match(
+  getCommentNodes(flexibleLoanRepaymentPath, ['H20']).H20,
+  /测试银行 100万/,
+  '放宽归还贷款摘要不得影响贷款提取批注'
+);
+
+const hyphenatedLoanRepaymentPath = path.join(
+  verifyDirectory,
+  'budget-june-with-hyphenated-repayment-bank.xlsx'
+);
+fs.writeFileSync(hyphenatedLoanRepaymentPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: templatePath,
+  templatePath,
+  ...hyphenatedLoanRepaymentSources
+}));
+assert.match(
+  getCommentNodes(hyphenatedLoanRepaymentPath, ['H22']).H22,
+  /中行-0649 200万/,
+  '归还贷款银行名称中的连字符必须保留'
+);
+
+const unseparatedLoanRepaymentPath = path.join(
+  verifyDirectory,
+  'budget-june-with-unseparated-repayment.xlsx'
+);
+fs.writeFileSync(unseparatedLoanRepaymentPath, await generateRollingBudget({
+  updatePeriod: '2026-06',
+  budgetWorkbookPath: templatePath,
+  templatePath,
+  ...unseparatedLoanRepaymentSources
+}));
+assert.match(
+  getCommentNodes(unseparatedLoanRepaymentPath, ['H22']).H22,
+  /归还贷款 200万/,
+  '只包含归还贷款的摘要不得中止生成'
+);
+await assert.rejects(
+  () => generateRollingBudget({
+    updatePeriod: '2026-06',
+    budgetWorkbookPath: templatePath,
+    templatePath,
+    ...missingLoanRepaymentCreditSources
+  }),
+  /银行流水贷款摘要或金额不符合批注规则/,
+  '归还贷款贷方金额为空时必须阻止导出'
 );
 
 const externalPurchaseSummaryBasePath = createExternalPurchaseSummaryBaseWorkbook();

@@ -604,6 +604,22 @@ function extractLoanName(summary, prefix) {
   return cleanText(summary.slice(valueStart, endIndex === -1 ? undefined : endIndex));
 }
 
+function extractRepaymentLoanName(summary) {
+  const repaymentText = '归还贷款';
+  const startIndex = summary.indexOf(repaymentText);
+  const endIndex = summary.indexOf('（', startIndex + repaymentText.length);
+  const repaymentSummary = cleanText(summary.slice(startIndex, endIndex === -1 ? undefined : endIndex));
+  const separatorIndex = repaymentSummary.indexOf('-', repaymentText.length);
+  if (separatorIndex !== -1) {
+    const name = cleanText(repaymentSummary.slice(separatorIndex + 1));
+    if (name) {
+      return name;
+    }
+  }
+
+  return cleanText(repaymentSummary.slice(repaymentText.length)) || repaymentText;
+}
+
 function buildLoanComment(records, remark, prefix, amountKey, requiresRepaymentText = false) {
   const lines = records
     .filter((record) => (
@@ -611,7 +627,9 @@ function buildLoanComment(records, remark, prefix, amountKey, requiresRepaymentT
       && (!requiresRepaymentText || record.summary.includes('归还贷款'))
     ))
     .map((record) => {
-      const name = extractLoanName(record.summary, prefix);
+      const name = requiresRepaymentText
+        ? extractRepaymentLoanName(record.summary)
+        : extractLoanName(record.summary, prefix);
       const amount = record[amountKey];
       if (!name || amount === null || amount === undefined) {
         throw new Error(`银行流水贷款摘要或金额不符合批注规则：${record.summary}`);
