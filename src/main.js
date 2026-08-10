@@ -9,6 +9,7 @@ import { reconcileVouchers } from './utils/voucherReconcile.js';
 import { expandDept } from './utils/deptExpand.js';
 import { generateInvoices } from './utils/invoiceGenerator.js';
 import { importJapanCost } from './utils/japanCostImport.js';
+import { updateJapanInternalProcurementInterest } from './utils/japanInternalProcurementInterest.js';
 import { filterProfitLossSubjects } from './utils/profitLossSubjectFilter.js';
 import { summarizeWechatTransactionFees } from './utils/wechatTransactionSummary.js';
 import { buildCashflowAnalysisExportHtml, buildCashflowAnalysisPayload } from './utils/cashflowAnalysis.js';
@@ -290,6 +291,29 @@ ipcMain.handle('japan-cost:import', async (event, { filePath, exchangeRate }) =>
     return { success: true, savePath };
   } catch (error) {
     console.error('Japan Cost Import Error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// 8. Japan Internal Procurement Interest Ledger Handler
+ipcMain.handle('japan-internal-procurement-interest:update', async (event, { filePath, month, exchangeRate }) => {
+  try {
+    const buffer = await updateJapanInternalProcurementInterest(filePath, month, exchangeRate);
+    const baseName = path.parse(filePath).name;
+    const { canceled, filePath: savePath } = await dialog.showSaveDialog({
+      title: '保存日本内采合同资金利息调整结果',
+      defaultPath: `日本内采合同资金利息调整_${month}月_${baseName}.xlsx`,
+      filters: [{ name: 'Excel File', extensions: ['xlsx'] }]
+    });
+
+    if (canceled || !savePath) {
+      return { success: false, message: 'Cancelled save' };
+    }
+
+    fs.writeFileSync(savePath, buffer);
+    return { success: true, savePath };
+  } catch (error) {
+    console.error('Japan Internal Procurement Interest Error:', error);
     return { success: false, error: error.message };
   }
 });

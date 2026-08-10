@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   expandDept: (filePath) => ipcRenderer.invoke('dept:expand', filePath),
   generateInvoice: (filePath) => ipcRenderer.invoke('invoice:generate', filePath),
   importJapanCost: (data) => ipcRenderer.invoke('japan-cost:import', data),
+  updateJapanInternalProcurementInterest: (data) => ipcRenderer.invoke('japan-internal-procurement-interest:update', data),
   filterProfitLossSubjects: (filePath) => ipcRenderer.invoke('profit-loss-subject:filter', filePath),
   summarizeWechatTransactionFees: (data) => ipcRenderer.invoke('wechat-transaction:summary', data),
   openCashflowFile: () => ipcRenderer.invoke('dialog:openCashflowFile'),
