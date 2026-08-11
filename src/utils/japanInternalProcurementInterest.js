@@ -1,5 +1,9 @@
 import XLSXModule from 'xlsx-js-style';
+import XlsxPopulate from 'xlsx-populate';
+import AdmZip from 'adm-zip';
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const XLSX = XLSXModule?.default ?? XLSXModule;
 
@@ -13,6 +17,8 @@ const SUMMARY_MONTH_END_ROW = 28;
 const ROLLING_MONTH_START_ROW = 5;
 const ROLLING_MONTH_END_ROW = 28;
 const ROLLING_BLOCK_START_ROW = 6;
+const RECOVERY_START_COLUMN = 10;
+const RECOVERY_END_COLUMN = 14;
 
 const DETAIL_HEADERS = {
   requestMonth: '请求月',
@@ -51,6 +57,15 @@ function cloneValue(value) {
   }
 
   return JSON.parse(JSON.stringify(value));
+}
+
+function prepareFormatPreservingSource(filePath) {
+  if (path.extname(filePath).toLowerCase() !== '.xlsx') {
+    throw new Error(
+      '旧版 .xls 无法直接无损保留格式。请先用 Excel、WPS 或 LibreOffice 将文件另存为 .xlsx 后再处理。'
+    );
+  }
+  return { filePath, cleanup: () => {} };
 }
 
 function copyCellPresentation(sheet, sourceAddress, targetAddress) {
@@ -518,11 +533,14 @@ function findRecoveryBlocks(sheet) {
 
 function shiftRecoveryRowsDown(sheet, startRow, endRow, offset) {
   for (let row = endRow; row >= startRow; row -= 1) {
-    for (let column = 10; column <= 14; column += 1) {
+    for (let column = RECOVERY_START_COLUMN; column <= RECOVERY_END_COLUMN; column += 1) {
       const sourceAddress = XLSX.utils.encode_cell({ r: row - 1, c: column });
       const targetAddress = XLSX.utils.encode_cell({ r: row + offset - 1, c: column });
       if (sheet[sourceAddress]) {
         sheet[targetAddress] = cloneValue(sheet[sourceAddress]);
+        if (column === RECOVERY_END_COLUMN && sheet[targetAddress].f) {
+          sheet[targetAddress].f = `M${row + offset}+N${row + offset}`;
+        }
       } else {
         delete sheet[targetAddress];
       }
@@ -573,12 +591,12 @@ function findOrCreateRecoveryBlock(sheet, selectedMonth) {
   const sourceRow = nextBlock
     ? nextBlock.headerRow + 3
     : lastBlock?.headerRow ?? ROLLING_BLOCK_START_ROW;
-  copyRowPresentation(sheet, sourceRow, targetRow, 10, 14);
-  copyRowPresentation(sheet, sourceRow + 1, targetRow + 1, 10, 14);
-  copyRowPresentation(sheet, sourceRow + 2, targetRow + 2, 10, 14);
+  copyRowPresentation(sheet, sourceRow, targetRow, RECOVERY_START_COLUMN, RECOVERY_END_COLUMN);
+  copyRowPresentation(sheet, sourceRow + 1, targetRow + 1, RECOVERY_START_COLUMN, RECOVERY_END_COLUMN);
+  copyRowPresentation(sheet, sourceRow + 2, targetRow + 2, RECOVERY_START_COLUMN, RECOVERY_END_COLUMN);
 
   for (let row = targetRow; row <= targetRow + 2; row += 1) {
-    for (let column = 10; column <= 14; column += 1) {
+    for (let column = RECOVERY_START_COLUMN; column <= RECOVERY_END_COLUMN; column += 1) {
       const address = XLSX.utils.encode_cell({ r: row - 1, c: column });
       clearCell(sheet, address);
     }
@@ -590,6 +608,8 @@ function findOrCreateRecoveryBlock(sheet, selectedMonth) {
 function updateRecoveryTable(sheet, selectedMonth, currentAdjustments, currentSummaryRow) {
   const headerRow = findOrCreateRecoveryBlock(sheet, selectedMonth);
   const monthText = monthLabel(selectedMonth);
+  setText(sheet, `K${headerRow}`, '时间');
+  setText(sheet, `L${headerRow}`, '部门');
   setNumber(sheet, `K${headerRow + 1}`, DETAIL_YEAR * 100 + selectedMonth);
   setNumber(sheet, `K${headerRow + 2}`, DETAIL_YEAR * 100 + selectedMonth);
   setText(sheet, `L${headerRow + 1}`, 'OCA');
@@ -615,6 +635,270 @@ function updateRecoveryTable(sheet, selectedMonth, currentAdjustments, currentSu
   return { headerRow };
 }
 
+function hasSameCellContent(left, right) {
+  return left?.t === right?.t
+    && left?.v === right?.v
+    && left?.f === right?.f;
+}
+
+function setPopulateFormulaCache(cell, cachedValue) {
+  const remainingChildren = (cell._remainingChildren ?? []).filter((node) => node.name !== 'v');
+  if (cachedValue !== undefined && cachedValue !== null) {
+    remainingChildren.push({ name: 'v', children: [cachedValue] });
+  }
+  cell._remainingChildren = remainingChildren;
+}
+
+function setPopulateFormula(cell, formula, cachedValue) {
+  cell.formula(formula);
+  setPopulateFormulaCache(cell, cachedValue);
+}
+
+function snapshotPopulateRecoveryBlock(sheet, headerRow) {
+  const rows = [];
+  for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
+    const rowNumber = headerRow + rowOffset;
+    const populateRow = sheet.row(rowNumber);
+    const styles = [];
+    for (let column = RECOVERY_START_COLUMN; column <= RECOVERY_END_COLUMN; column += 1) {
+      const cell = sheet.cell(rowNumber, column + 1);
+      cell.style('numberFormat');
+      styles.push(cell._style);
+    }
+    rows.push({
+      height: populateRow.height(),
+      hidden: populateRow.hidden(),
+      styles
+    });
+  }
+  return rows;
+}
+
+function applyPopulateRecoveryBlockPresentation(sheet, headerRow, snapshot) {
+  snapshot.forEach((rowSnapshot, rowOffset) => {
+    const rowNumber = headerRow + rowOffset;
+    sheet.row(rowNumber).height(rowSnapshot.height).hidden(rowSnapshot.hidden);
+    rowSnapshot.styles.forEach((style, columnOffset) => {
+      sheet.cell(rowNumber, RECOVERY_START_COLUMN + columnOffset + 1).style(style);
+    });
+  });
+}
+
+function snapshotPopulateRowStyles(sheet, rowNumber, startColumn, endColumn) {
+  const styles = [];
+  for (let column = startColumn; column <= endColumn; column += 1) {
+    const cell = sheet.cell(rowNumber, column + 1);
+    cell.style('numberFormat');
+    styles.push(cell._style);
+  }
+  return styles;
+}
+
+function applyPopulateRowStyles(sheet, rowNumber, startColumn, styles) {
+  styles.forEach((style, columnOffset) => {
+    sheet.cell(rowNumber, startColumn + columnOffset + 1).style(style);
+  });
+}
+
+function findSummaryTotalRow(sheet) {
+  for (let row = SUMMARY_MONTH_START_ROW; row <= SUMMARY_MONTH_END_ROW + 1; row += 1) {
+    if (normalizeText(getCell(sheet, `A${row}`)?.v) === '总计') {
+      return row;
+    }
+  }
+  return null;
+}
+
+function alignPopulateSummaryStyles(populateSheet, originalSheet, updatedSheet) {
+  const originalTotalRow = findSummaryTotalRow(originalSheet);
+  const updatedTotalRow = findSummaryTotalRow(updatedSheet);
+  if (!originalTotalRow || !updatedTotalRow || originalTotalRow === updatedTotalRow) {
+    return;
+  }
+
+  const totalStyles = snapshotPopulateRowStyles(populateSheet, originalTotalRow, 0, 3);
+  if (updatedTotalRow > originalTotalRow) {
+    const firstDataStyles = snapshotPopulateRowStyles(populateSheet, originalTotalRow - 2, 0, 3);
+    const secondDataStyles = snapshotPopulateRowStyles(populateSheet, originalTotalRow - 1, 0, 3);
+    for (let row = originalTotalRow; row < updatedTotalRow; row += 1) {
+      applyPopulateRowStyles(
+        populateSheet,
+        row,
+        0,
+        (row - originalTotalRow) % 2 === 0 ? firstDataStyles : secondDataStyles
+      );
+    }
+  }
+  applyPopulateRowStyles(populateSheet, updatedTotalRow, 0, totalStyles);
+}
+
+function alignPopulateRecoveryBlockStyles(populateSheet, originalSheet, updatedSheet) {
+  const originalBlocks = findRecoveryBlocks(originalSheet);
+  const updatedBlocks = findRecoveryBlocks(updatedSheet);
+  if (updatedBlocks.length === 0) {
+    return;
+  }
+
+  const snapshotRows = new Set(originalBlocks.map((block) => block.headerRow));
+  snapshotRows.add(ROLLING_BLOCK_START_ROW);
+  const snapshots = new Map(
+    Array.from(snapshotRows, (headerRow) => [
+      headerRow,
+      snapshotPopulateRecoveryBlock(populateSheet, headerRow)
+    ])
+  );
+
+  updatedBlocks.forEach((block) => {
+    const existing = originalBlocks.find((item) => item.month === block.month);
+    const following = originalBlocks.find((item) => item.month > block.month);
+    const sourceHeaderRow = existing?.headerRow
+      ?? following?.headerRow
+      ?? originalBlocks[originalBlocks.length - 1]?.headerRow
+      ?? ROLLING_BLOCK_START_ROW;
+    applyPopulateRecoveryBlockPresentation(populateSheet, block.headerRow, snapshots.get(sourceHeaderRow));
+  });
+}
+
+function removeXmlElements(document, predicate) {
+  Array.from(document.getElementsByTagName('*')).forEach((element) => {
+    if (predicate(element) && element.parentNode) {
+      element.parentNode.removeChild(element);
+    }
+  });
+}
+
+function updateZipXml(zip, entryName, updater) {
+  const entry = zip.getEntry(entryName);
+  if (!entry) {
+    return;
+  }
+
+  const document = new DOMParser().parseFromString(entry.getData().toString('utf8'), 'application/xml');
+  updater(document);
+  zip.updateFile(entryName, Buffer.from(new XMLSerializer().serializeToString(document), 'utf8'));
+}
+
+function stripPivotTablesAndEnableRecalculation(buffer) {
+  const zip = new AdmZip(buffer);
+
+  zip.getEntries().forEach((entry) => {
+    if (/^xl\/worksheets\/sheet\d+\.xml$/.test(entry.entryName)) {
+      updateZipXml(zip, entry.entryName, (document) => {
+        removeXmlElements(document, (element) => element.localName === 'pivotTableParts');
+      });
+    } else if (/^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/.test(entry.entryName)) {
+      updateZipXml(zip, entry.entryName, (document) => {
+        removeXmlElements(
+          document,
+          (element) => element.localName === 'Relationship'
+            && element.getAttribute('Type')?.endsWith('/pivotTable')
+        );
+      });
+    }
+  });
+
+  updateZipXml(zip, 'xl/workbook.xml', (document) => {
+    removeXmlElements(document, (element) => element.localName === 'pivotCaches');
+    let calcProperties = Array.from(document.getElementsByTagName('*'))
+      .find((element) => element.localName === 'calcPr');
+    if (!calcProperties) {
+      calcProperties = document.createElementNS(
+        'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+        'calcPr'
+      );
+      document.documentElement.appendChild(calcProperties);
+    }
+    calcProperties.setAttribute('calcMode', 'auto');
+    calcProperties.setAttribute('calcOnSave', 'true');
+    calcProperties.setAttribute('calcCompleted', 'false');
+    calcProperties.setAttribute('fullCalcOnLoad', 'true');
+    calcProperties.setAttribute('forceFullCalc', 'true');
+  });
+
+  updateZipXml(zip, 'xl/_rels/workbook.xml.rels', (document) => {
+    removeXmlElements(
+      document,
+      (element) => element.localName === 'Relationship'
+        && (
+          element.getAttribute('Type')?.endsWith('/pivotCacheDefinition')
+          || element.getAttribute('Type')?.endsWith('/calcChain')
+        )
+    );
+  });
+
+  updateZipXml(zip, '[Content_Types].xml', (document) => {
+    removeXmlElements(document, (element) => {
+      if (element.localName !== 'Override') {
+        return false;
+      }
+      const partName = element.getAttribute('PartName') ?? '';
+      return partName.startsWith('/xl/pivotTables/')
+        || partName.startsWith('/xl/pivotCache/')
+        || partName === '/xl/calcChain.xml';
+    });
+  });
+
+  zip.getEntries().forEach((entry) => {
+    if (
+      entry.entryName.startsWith('xl/pivotTables/')
+      || entry.entryName.startsWith('xl/pivotCache/')
+      || entry.entryName === 'xl/calcChain.xml'
+    ) {
+      zip.deleteFile(entry.entryName);
+    }
+  });
+
+  return zip.toBuffer();
+}
+
+async function writeWorkbookPreservingFormatting(sourceBuffer, originalWorkbook, updatedWorkbook) {
+  const populateWorkbook = await XlsxPopulate.fromDataAsync(sourceBuffer);
+  const originalSummary = originalWorkbook.Sheets[SUMMARY_SHEET_NAME];
+  const updatedSummary = updatedWorkbook.Sheets[SUMMARY_SHEET_NAME];
+  alignPopulateSummaryStyles(
+    populateWorkbook.sheet(SUMMARY_SHEET_NAME),
+    originalSummary,
+    updatedSummary
+  );
+  alignPopulateRecoveryBlockStyles(
+    populateWorkbook.sheet(SUMMARY_SHEET_NAME),
+    originalSummary,
+    updatedSummary
+  );
+
+  updatedWorkbook.SheetNames.forEach((sheetName) => {
+    const originalSheet = originalWorkbook.Sheets[sheetName];
+    const updatedSheet = updatedWorkbook.Sheets[sheetName];
+    const populateSheet = populateWorkbook.sheet(sheetName);
+    const addresses = new Set([
+      ...Object.keys(originalSheet).filter((address) => !address.startsWith('!')),
+      ...Object.keys(updatedSheet).filter((address) => !address.startsWith('!'))
+    ]);
+
+    addresses.forEach((address) => {
+      const originalCell = originalSheet[address];
+      const updatedCell = updatedSheet[address];
+      if (hasSameCellContent(originalCell, updatedCell)) {
+        if (updatedCell?.f) {
+          setPopulateFormulaCache(populateSheet.cell(address), updatedCell.v);
+        }
+        return;
+      }
+
+      const populateCell = populateSheet.cell(address);
+      if (!updatedCell || updatedCell.t === 'z' || (updatedCell.v === undefined && !updatedCell.f)) {
+        populateCell.clear();
+      } else if (updatedCell.f) {
+        setPopulateFormula(populateCell, updatedCell.f, updatedCell.v);
+      } else {
+        populateCell.value(updatedCell.v);
+      }
+    });
+  });
+
+  return stripPivotTablesAndEnableRecalculation(await populateWorkbook.outputAsync());
+}
+
 function validateInput(filePath, month, exchangeRate) {
   if (!filePath) {
     throw new Error('请选择台账文件');
@@ -633,37 +917,40 @@ function validateInput(filePath, month, exchangeRate) {
  */
 export async function updateJapanInternalProcurementInterest(filePath, month, exchangeRate) {
   validateInput(filePath, month, exchangeRate);
+  const preparedSource = prepareFormatPreservingSource(filePath);
 
-  const workbook = XLSX.read(fs.readFileSync(filePath), {
-    type: 'buffer',
-    cellStyles: true,
-    cellFormula: true,
-    cellDates: true,
-    cellNF: true
-  });
+  try {
+    const sourceBuffer = fs.readFileSync(preparedSource.filePath);
+    const readOptions = {
+      type: 'buffer',
+      cellStyles: true,
+      cellFormula: true,
+      cellDates: true,
+      cellNF: true
+    };
+    const originalWorkbook = XLSX.read(sourceBuffer, readOptions);
+    const workbook = XLSX.read(sourceBuffer, readOptions);
+    const summarySheet = workbook.Sheets[SUMMARY_SHEET_NAME];
+    const detailSheet = workbook.Sheets[DETAIL_SHEET_NAME];
+    if (!workbook.Sheets[INSTRUCTION_SHEET_NAME] || !summarySheet || !detailSheet) {
+      throw new Error(
+        `台账必须包含“${INSTRUCTION_SHEET_NAME}”、“${SUMMARY_SHEET_NAME}”和“${DETAIL_SHEET_NAME}”三个工作表`
+      );
+    }
 
-  const summarySheet = workbook.Sheets[SUMMARY_SHEET_NAME];
-  const detailSheet = workbook.Sheets[DETAIL_SHEET_NAME];
-  if (!workbook.Sheets[INSTRUCTION_SHEET_NAME] || !summarySheet || !detailSheet) {
-    throw new Error(
-      `台账必须包含“${INSTRUCTION_SHEET_NAME}”、“${SUMMARY_SHEET_NAME}”和“${DETAIL_SHEET_NAME}”三个工作表`
-    );
+    const detailColumns = findDetailColumns(detailSheet);
+    const { rows, rowsByMonth } = collectDetailRows(detailSheet, detailColumns, month);
+    const detailResult = updateDetailAmounts(detailSheet, detailColumns, rows, rowsByMonth, month, exchangeRate);
+    const aggregate = aggregateDetails(rows, detailColumns, detailSheet, month, detailResult.rateRows);
+    const previous = readPreviousRollingValues(summarySheet, month);
+
+    updateSummaryPivot(summarySheet, aggregate, month);
+    const rollingResult = updateRollingSummary(summarySheet, aggregate, month, previous);
+    updateDepartmentTotals(summarySheet, aggregate, aggregate.departmentTotals);
+    updateRecoveryTable(summarySheet, month, rollingResult.currentAdjustments, monthPairRow(month));
+
+    return await writeWorkbookPreservingFormatting(sourceBuffer, originalWorkbook, workbook);
+  } finally {
+    preparedSource.cleanup();
   }
-
-  const detailColumns = findDetailColumns(detailSheet);
-  const { rows, rowsByMonth } = collectDetailRows(detailSheet, detailColumns, month);
-  const detailResult = updateDetailAmounts(detailSheet, detailColumns, rows, rowsByMonth, month, exchangeRate);
-  const aggregate = aggregateDetails(rows, detailColumns, detailSheet, month, detailResult.rateRows);
-  const previous = readPreviousRollingValues(summarySheet, month);
-
-  updateSummaryPivot(summarySheet, aggregate, month);
-  const rollingResult = updateRollingSummary(summarySheet, aggregate, month, previous);
-  updateDepartmentTotals(summarySheet, aggregate, aggregate.departmentTotals);
-  updateRecoveryTable(summarySheet, month, rollingResult.currentAdjustments, monthPairRow(month));
-
-  return XLSX.write(workbook, {
-    type: 'buffer',
-    bookType: 'xlsx',
-    cellStyles: true
-  });
 }

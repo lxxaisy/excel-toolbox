@@ -36,13 +36,13 @@
         <div class="space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-base font-semibold text-slate-700">选择台账文件</label>
-            <el-tag type="info" size="small" effect="plain">必须包含 3 个指定工作表</el-tag>
+            <el-tag type="info" size="small" effect="plain">标准 .xlsx，包含 3 个指定工作表</el-tag>
           </div>
 
           <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-lg border border-slate-200 border-dashed">
             <el-button type="primary" plain @click="selectFile">选择文件</el-button>
             <div class="flex-1 truncate text-sm font-mono text-slate-600">
-              {{ filePath || '请选择 .xlsx / .xls 台账文件' }}
+              {{ filePath || '请选择 .xlsx 台账文件' }}
             </div>
           </div>
         </div>
@@ -51,6 +51,7 @@
           <p class="font-semibold mb-2">处理规则：</p>
           <ul class="list-disc list-inside space-y-1 opacity-90">
             <li>请先在明细 Sheet 中维护当月及上月数据。</li>
+            <li>旧版 .xls 请先通过 Excel 或 WPS 另存为 .xlsx。</li>
             <li>系统会更新当月汇率、人民币金额、年度汇总和回笼调整表。</li>
             <li>新月份的“当月回笼金额”会留空，供手工填写。</li>
             <li>结果统一导出为 .xlsx 文件。</li>
@@ -102,8 +103,8 @@ const selectFile = async () => {
       return;
     }
 
-    if (!/\.(xlsx|xls)$/i.test(selectedPath)) {
-      ElMessage.warning('请选择 .xlsx 或 .xls 台账文件');
+    if (!/\.xlsx$/i.test(selectedPath)) {
+      ElMessage.warning('为完整保留格式，请先将台账另存为 .xlsx 后再选择');
       return;
     }
 
