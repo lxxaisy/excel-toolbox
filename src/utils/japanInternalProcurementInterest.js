@@ -654,6 +654,12 @@ function setPopulateFormula(cell, formula, cachedValue) {
   setPopulateFormulaCache(cell, cachedValue);
 }
 
+function setPopulateCellStyle(cell, style) {
+  // xlsx-populate matches Style by constructor name, which production minification changes.
+  cell._style = style;
+  cell._styleId = style.id();
+}
+
 function snapshotPopulateRecoveryBlock(sheet, headerRow) {
   const rows = [];
   for (let rowOffset = 0; rowOffset < 3; rowOffset += 1) {
@@ -679,7 +685,10 @@ function applyPopulateRecoveryBlockPresentation(sheet, headerRow, snapshot) {
     const rowNumber = headerRow + rowOffset;
     sheet.row(rowNumber).height(rowSnapshot.height).hidden(rowSnapshot.hidden);
     rowSnapshot.styles.forEach((style, columnOffset) => {
-      sheet.cell(rowNumber, RECOVERY_START_COLUMN + columnOffset + 1).style(style);
+      setPopulateCellStyle(
+        sheet.cell(rowNumber, RECOVERY_START_COLUMN + columnOffset + 1),
+        style
+      );
     });
   });
 }
@@ -696,7 +705,7 @@ function snapshotPopulateRowStyles(sheet, rowNumber, startColumn, endColumn) {
 
 function applyPopulateRowStyles(sheet, rowNumber, startColumn, styles) {
   styles.forEach((style, columnOffset) => {
-    sheet.cell(rowNumber, startColumn + columnOffset + 1).style(style);
+    setPopulateCellStyle(sheet.cell(rowNumber, startColumn + columnOffset + 1), style);
   });
 }
 
